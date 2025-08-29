@@ -4,31 +4,22 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 module.exports = async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Credentials", true);
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET,OPTIONS,PATCH,DELETE,POST,PUT"
-  );
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "X-CSRF-Token, X-Requested-With, Accept, Content-Type, Authorization"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,PATCH,DELETE,POST,PUT");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method === "POST") {
     try {
       const body = req.body;
 
       const message = `
-🔒 *Test Lock Notification*
+🔒 *Lock Notification*
 📦 Payload: ${JSON.stringify(body)}
       `;
 
-      await axios.post(
+      const tgRes = await axios.post(
         `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
         {
           chat_id: TELEGRAM_CHAT_ID,
@@ -37,10 +28,10 @@ module.exports = async function handler(req, res) {
         }
       );
 
-      return res.status(200).json({ status: "sent", body });
+      return res.status(200).json({ status: "ok", telegram: tgRes.data });
     } catch (err) {
-      console.error(err);
-      return res.status(500).json({ error: err.message });
+      console.error("Telegram send failed:", err.response?.data || err.message);
+      return res.status(500).json({ error: err.response?.data || err.message });
     }
   }
 
