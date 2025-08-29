@@ -4,16 +4,10 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Credentials", true);
+  // ✅ Always add CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET,OPTIONS,PATCH,DELETE,POST,PUT"
-  );
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "X-CSRF-Token, X-Requested-With, Accept, Content-Type, Authorization"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -21,14 +15,16 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     try {
-      const body = req.body;
+      // Ensure body is parsed
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
 
       const message = `
 🔒 *Lock Notification*
 📦 Payload: ${JSON.stringify(body, null, 2)}
       `;
 
-      const response = await axios.post(
+      // Send message to Telegram
+      const tgResponse = await axios.post(
         `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
         {
           chat_id: TELEGRAM_CHAT_ID,
@@ -37,16 +33,19 @@ export default async function handler(req, res) {
         }
       );
 
+      // Return both body + Telegram response
       return res.status(200).json({
         ok: true,
-        telegram: response.data, // show Telegram response
-        body
+        body,
+        telegram_response: tgResponse.data
       });
     } catch (err) {
-      console.error("Telegram API error:", err.response?.data || err.message);
+      console.error("Webhook error:", err.response?.data || err.message);
+
       return res.status(500).json({
-        error: "Telegram send failed",
-        details: err.response?.data || err.message
+        ok: false,
+        error: err.message,
+        details: err.response?.data || "No details"
       });
     }
   }
