@@ -5,23 +5,12 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 module.exports = async (req, res) => {
   try {
-    if (req.method !== "POST") {
-      return res.status(200).json({ ok: true });
-    }
+    if (req.method !== "POST") return res.status(200).json({ ok: true });
 
     const body = req.body || {};
-    console.log("🔍 Incoming payload:", JSON.stringify(body, null, 2));
-
-    if (!body.chainId) {
-      return res.status(200).json({ ok: true, note: "Validation ping" });
-    }
+    const txHash = body.txs?.[0]?.hash || body.txHash || "N/A";
 
     const chainId = body.chainId;
-    const txHash =
-      body.logs?.[0]?.transactionHash ||
-      body.txs?.[0]?.hash ||
-      "N/A";
-
     const chains = {
       "0x1": { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
       "1":   { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
@@ -32,16 +21,17 @@ module.exports = async (req, res) => {
       "0x2105": { name: "Base", explorer: "https://basescan.org/tx/" },
       "8453":   { name: "Base", explorer: "https://basescan.org/tx/" },
     };
+    const chain = chains[chainId]?.name || chainId;
+    const explorer = chains[chainId]?.explorer || "";
 
-    const chainInfo = chains[chainId] || { name: chainId, explorer: "" };
-    const explorerLink = chainInfo.explorer ? `${chainInfo.explorer}${txHash}` : txHash;
+    // 🚦 Pick status label
+    const statusLabel = body.confirmed ? "✅ Lock Confirmed" : "🔒 New Lock Created (pending)";
 
-    // 📩 Telegram message with clickable tx link
     const message = `
-🔒 *New Lock Created*
-🌐 Chain: ${chainInfo.name}
-🔗 [View Tx](${explorerLink})
-`;
+${statusLabel}
+🌐 Chain: ${chain}
+🔗 [View Tx](${explorer}${txHash})
+    `;
 
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
@@ -51,7 +41,7 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({ status: "sent" });
   } catch (err) {
-    console.error("❌ Telegram webhook error:", err.response?.data || err.message);
+    console.error("❌ Telegram webhook error:", err.message);
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
