@@ -1,3 +1,8 @@
+import axios from "axios";
+
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Credentials", true);
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -10,18 +15,31 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     try {
-      console.log("ENV TELEGRAM_TOKEN:", process.env.TELEGRAM_TOKEN);
-      console.log("ENV TELEGRAM_CHAT_ID:", process.env.TELEGRAM_CHAT_ID);
-      console.log("BODY:", req.body);
+      const body = req.body;
+
+      // Build Telegram message
+      const message = `
+🔒 *Lock Notification Test*
+📦 Payload: ${JSON.stringify(body)}
+      `;
+
+      // Send to Telegram
+      const tgRes = await axios.post(
+        `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+        {
+          chat_id: TELEGRAM_CHAT_ID,
+          text: message,
+          parse_mode: "Markdown"
+        }
+      );
 
       return res.status(200).json({
         ok: true,
-        token: process.env.TELEGRAM_TOKEN ? "set" : "missing",
-        chat: process.env.TELEGRAM_CHAT_ID ? "set" : "missing",
-        body: req.body
+        telegram: tgRes.data,
+        body
       });
     } catch (err) {
-      console.error(err);
+      console.error("TELEGRAM ERROR:", err.response?.data || err.message);
       return res.status(500).json({ error: err.message });
     }
   }
