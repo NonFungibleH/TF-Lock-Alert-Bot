@@ -4,6 +4,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export default async function handler(req, res) {
+  // ✅ Always return CORS headers
   res.setHeader("Access-Control-Allow-Credentials", true);
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,PATCH,DELETE,POST,PUT");
@@ -17,30 +18,30 @@ export default async function handler(req, res) {
     try {
       const body = req.body;
 
-      // Build Telegram message
       const message = `
-🔒 *Lock Notification Test*
+🔒 *Test Lock Notification*
 📦 Payload: ${JSON.stringify(body)}
       `;
 
-      // Send to Telegram
-      const tgRes = await axios.post(
-        `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-        {
-          chat_id: TELEGRAM_CHAT_ID,
-          text: message,
-          parse_mode: "Markdown"
-        }
-      );
+      // 🚀 Send to Telegram
+      const response = await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+        parse_mode: "Markdown"
+      });
 
+      // Return both our status + Telegram’s reply
       return res.status(200).json({
         ok: true,
-        telegram: tgRes.data,
-        body
+        telegram: response.data,
+        body,
       });
     } catch (err) {
-      console.error("TELEGRAM ERROR:", err.response?.data || err.message);
-      return res.status(500).json({ error: err.message });
+      console.error("Telegram API error:", err.response?.data || err.message);
+      return res.status(500).json({
+        error: "Telegram send failed",
+        details: err.response?.data || err.message,
+      });
     }
   }
 
