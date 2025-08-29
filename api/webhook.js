@@ -4,6 +4,16 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export default async function handler(req, res) {
+  // --- CORS fix ---
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end(); // 👈 handle preflight
+  }
+  // -----------------
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -11,12 +21,10 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
 
-    // Moralis verification ping (empty body)
     if (!body.chainId || !body.txHash) {
       return res.status(200).json({ status: "webhook verified" });
     }
 
-    // Extract details
     const chainId = body.chainId;
     const txHash = body.txHash;
 
@@ -32,7 +40,6 @@ export default async function handler(req, res) {
       amount = body.logs[0].decoded.amount || null;
     }
 
-    // Format lock length
     const diff = unlockTime ? unlockTime - blockTimestamp : 0;
     let lockLength = "Unknown";
     if (diff > 0) {
@@ -41,14 +48,12 @@ export default async function handler(req, res) {
       lockLength = months >= 1 ? `${months} months (${days} days)` : `${days} days`;
     }
 
-    // Map chain names
     const chains = {
       "0x1": "Ethereum",
       "0x38": "BNB Chain",
       "0x89": "Polygon",
       "0x2105": "Base"
     };
-
     const chain = chains[chainId] || chainId;
 
     const message = `
@@ -64,7 +69,6 @@ export default async function handler(req, res) {
     }/tx/${txHash}
     `;
 
-    // Send Telegram message
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
       text: message,
