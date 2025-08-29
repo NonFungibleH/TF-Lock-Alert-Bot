@@ -4,15 +4,16 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export default async function handler(req, res) {
-  // --- CORS fix ---
+  // ✅ Always set CORS headers
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
+  // ✅ Respond to preflight OPTIONS check
   if (req.method === "OPTIONS") {
-    return res.status(200).end(); // 👈 handle preflight
+    return res.status(200).end();
   }
-  // -----------------
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -21,6 +22,7 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
 
+    // If Moralis just verifying the webhook
     if (!body.chainId || !body.txHash) {
       return res.status(200).json({ status: "webhook verified" });
     }
