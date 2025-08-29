@@ -12,38 +12,35 @@ module.exports = async (req, res) => {
     const body = req.body || {};
     console.log("🔍 Incoming payload:", JSON.stringify(body, null, 2));
 
-    // Handle validation ping
     if (!body.chainId) {
       return res.status(200).json({ ok: true, note: "Validation ping" });
     }
 
     const chainId = body.chainId;
-
-    const chains = {
-      "0x1": "Ethereum", "1": "Ethereum",
-      "0x38": "BNB Chain", "56": "BNB Chain",
-      "0x89": "Polygon", "137": "Polygon",
-      "0x2105": "Base", "8453": "Base",
-    };
-    const chain = chains[chainId] || chainId;
-
-    // ✅ Transaction hash: prefer logs[0].transactionHash, fallback to txs[0].hash
     const txHash =
       body.logs?.[0]?.transactionHash ||
       body.txs?.[0]?.hash ||
       "N/A";
 
-    // ✅ Only trigger if we actually have logs (means contract event fired)
-    if (!body.logs || body.logs.length === 0) {
-      console.log("ℹ️ No logs found, skipping");
-      return res.status(200).json({ ok: true, skipped: true });
-    }
+    const chains = {
+      "0x1": { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
+      "1":   { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
+      "0x38":{ name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
+      "56":  { name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
+      "0x89":{ name: "Polygon", explorer: "https://polygonscan.com/tx/" },
+      "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/" },
+      "0x2105": { name: "Base", explorer: "https://basescan.org/tx/" },
+      "8453":   { name: "Base", explorer: "https://basescan.org/tx/" },
+    };
 
-    // 📩 Short Telegram message
+    const chainInfo = chains[chainId] || { name: chainId, explorer: "" };
+    const explorerLink = chainInfo.explorer ? `${chainInfo.explorer}${txHash}` : txHash;
+
+    // 📩 Telegram message with clickable tx link
     const message = `
 🔒 *New Lock Created*
-🌐 Chain: ${chain}
-🔗 Tx: ${txHash}
+🌐 Chain: ${chainInfo.name}
+🔗 [View Tx](${explorerLink})
 `;
 
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
