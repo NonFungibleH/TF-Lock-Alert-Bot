@@ -11,12 +11,12 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
 
-    // ✅ Handle Moralis verification ping
+    // Moralis verification ping (empty body)
     if (!body.chainId || !body.txHash) {
       return res.status(200).json({ status: "webhook verified" });
     }
 
-    // --- Extract info (like lock length etc.) ---
+    // Extract details
     const chainId = body.chainId;
     const txHash = body.txHash;
 
@@ -32,15 +32,39 @@ export default async function handler(req, res) {
       amount = body.logs[0].decoded.amount || null;
     }
 
+    // Format lock length
+    const diff = unlockTime ? unlockTime - blockTimestamp : 0;
+    let lockLength = "Unknown";
+    if (diff > 0) {
+      const days = Math.floor(diff / 86400);
+      const months = Math.floor(days / 30);
+      lockLength = months >= 1 ? `${months} months (${days} days)` : `${days} days`;
+    }
+
+    // Map chain names
+    const chains = {
+      "0x1": "Ethereum",
+      "0x38": "BNB Chain",
+      "0x89": "Polygon",
+      "0x2105": "Base"
+    };
+
+    const chain = chains[chainId] || chainId;
+
     const message = `
-    🔒 *New Lock Created*
-    🌐 Chain: ${chainId}
-    💰 Amount: ${amount || "Unknown"}
-    ⏳ UnlockTime: ${unlockTime || "Unknown"}
-    🔗 Tx: ${txHash}
+🔒 *New Lock Created*
+🌐 Chain: ${chain}
+💰 Amount: ${amount || "Unknown"}
+⏳ Lock Length: ${lockLength}
+🔗 Tx: https://${
+      chain === "Ethereum" ? "etherscan.io" :
+      chain === "Polygon" ? "polygonscan.com" :
+      chain === "BNB Chain" ? "bscscan.com" :
+      chain === "Base" ? "basescan.org" : ""
+    }/tx/${txHash}
     `;
 
-    // Send to Telegram
+    // Send Telegram message
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
       text: message,
