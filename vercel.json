@@ -1,13 +1,13 @@
 {
   "version": 2,
   "builds": [
-    { "src": "pages/api/webhook.js", "use": "@vercel/node" }
+    { "src": "api/webhook.js", "use": "@vercel/node" }
   ],
   "routes": [
     {
       "src": "/api/webhook",
       "methods": ["POST", "OPTIONS"],
-      "dest": "/pages/api/webhook.js",
+      "dest": "/api/webhook.js",
       "headers": {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
