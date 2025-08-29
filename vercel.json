@@ -1,9 +1,18 @@
 {
   "version": 2,
   "builds": [
-    { "src": "api/webhook.js", "use": "@vercel/node" }
+    { "src": "pages/api/webhook.js", "use": "@vercel/node" }
   ],
   "routes": [
-    { "src": "/api/webhook", "dest": "/api/webhook.js" }
+    {
+      "src": "/api/webhook",
+      "methods": ["POST", "OPTIONS"],
+      "dest": "/pages/api/webhook.js",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+      }
+    }
   ]
 }
