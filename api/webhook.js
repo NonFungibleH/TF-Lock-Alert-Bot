@@ -3,7 +3,6 @@ const axios = require("axios");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Utility: format seconds into months/days
 function formatLockLength(unlockTime, blockTime) {
   const diff = unlockTime - blockTime;
   if (diff <= 0) return "Expired/Unlocked";
@@ -23,12 +22,10 @@ module.exports = async (req, res) => {
 
     const body = req.body;
 
-    // Moralis webhook payload
     const chainId = body.chainId;
     const txHash = body.txHash;
     const blockTimestamp = Math.floor(new Date(body.block.timestamp).getTime() / 1000);
 
-    // Map chainId → human name
     const chains = {
       "0x1": "Ethereum",
       "0x38": "BNB Chain",
@@ -37,30 +34,34 @@ module.exports = async (req, res) => {
     };
     const chain = chains[chainId] || chainId;
 
-    // Get unlockTime from logs (adjust depending on ABI)
-    const unlockTime = parseInt(body.logs?.[0]?.decoded?.unlockTime || 0);
-
+    const decoded = body.logs?.[0]?.decoded || {};
+    const unlockTime = parseInt(decoded.unlockTime || 0);
     const lockLength = formatLockLength(unlockTime, blockTimestamp);
 
-    // Build Telegram message
+    const amount = decoded.amount || "Unknown";
+    const tokenAddress = decoded.tokenAddress || "Unknown";
+    const withdrawalAddress = decoded.withdrawalAddress || "Unknown";
+
     const message = `
 🔒 *New Lock Created*
 🌐 Chain: ${chain}
+💰 Amount: ${amount}
+📍 Token: ${tokenAddress}
+👤 Withdrawal: ${withdrawalAddress}
 ⏳ Lock Length: ${lockLength}
-🔗 [View Tx](https://${
+🔗 [View Tx](${
       chain === "Ethereum"
-        ? "etherscan.io"
+        ? "https://etherscan.io/tx/"
         : chain === "Polygon"
-        ? "polygonscan.com"
+        ? "https://polygonscan.com/tx/"
         : chain === "BNB Chain"
-        ? "bscscan.com"
+        ? "https://bscscan.com/tx/"
         : chain === "Base"
-        ? "basescan.org"
+        ? "https://basescan.org/tx/"
         : ""
-    }/tx/${txHash})
+    }${txHash})
     `;
 
-    // Send to Telegram
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
       text: message,
@@ -69,8 +70,7 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({ status: "sent", body });
   } catch (err) {
-    console.error("❌ Telegram webhook error:", err);
+    console.error("❌ Telegram webhook error:", err.response?.data || err.message);
     return res.status(500).json({ error: err.message });
   }
 };
-
