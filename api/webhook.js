@@ -17,7 +17,7 @@ module.exports = async (req, res) => {
     }
 
     const chainId = body.chainId;
-    const txHash = body.txHash || "N/A";
+    const txHash = body.txHash || body.txs?.[0]?.hash || "N/A";
 
     const chains = {
       "0x1": "Ethereum", "1": "Ethereum",
