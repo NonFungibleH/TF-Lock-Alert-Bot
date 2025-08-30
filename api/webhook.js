@@ -42,6 +42,9 @@ const UNCX_CONTRACTS = new Set([
   "0xadb2437e6f65682b85f814fbc12fec0508a7b1d0".toLowerCase(),
 ]);
 
+// Simple in-memory dedupe set
+const sentTxs = new Set();
+
 module.exports = async (req, res) => {
   try {
     if (req.method !== "POST") {
@@ -56,10 +59,19 @@ module.exports = async (req, res) => {
     }
 
     const chainId = body.chainId;
+    const logs = body.logs || [];
+    const log = logs[0] || {};
     const txHash =
-      body.logs?.[0]?.transactionHash ||
+      log.transactionHash ||
       body.txs?.[0]?.hash ||
       "N/A";
+
+    // 🚨 Dedupe check
+    if (sentTxs.has(txHash)) {
+      console.log(`⚠️ Already sent message for ${txHash}, skipping duplicate`);
+      return res.status(200).json({ ok: true, note: "duplicate skipped" });
+    }
+    sentTxs.add(txHash);
 
     const chains = {
       "0x1": { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
@@ -76,8 +88,6 @@ module.exports = async (req, res) => {
     const explorerLink = chainInfo.explorer ? `${chainInfo.explorer}${txHash}` : txHash;
 
     // detect type from logs
-    const logs = body.logs || [];
-    const log = logs[0] || {};
     const eventName = log.name || log.decoded?.name || "";
     const type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
 
@@ -118,3 +128,4 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
+
