@@ -1,7 +1,14 @@
 const axios = require("axios");
+const { ethers } = require("ethers");
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const RPCS = {
+  "0x1": "https://rpc.ankr.com/eth",
+  "0x38": "https://rpc.ankr.com/bsc",
+  "0x89": "https://rpc.ankr.com/polygon",
+  "0x2105": "https://mainnet.base.org",
+};
 
 function formatDate(unixTime) {
   if (!unixTime) return "N/A";
@@ -9,11 +16,18 @@ function formatDate(unixTime) {
   return date.toISOString().replace("T", " ").replace(".000Z", " UTC");
 }
 
-// 🔢 Simple counter for Lock IDs (resets if server restarts)
+// Incremental lock ID
 let counter = 1;
 function makeLockId() {
   return (counter++).toString().padStart(4, "0");
 }
+
+// Minimal ABIs
+const lpAbi = [
+  "function token0() view returns (address)",
+  "function token1() view returns (address)",
+];
+const erc20Abi = ["function symbol() view returns (string)"];
 
 // Known lock contract sources
 const TEAM_FINANCE_CONTRACTS = new Set([
@@ -34,7 +48,7 @@ const UNCX_CONTRACTS = new Set([
   "0xfe88dab083964c56429baa01f37ec2265abf1557".toLowerCase(),
   "0x7229247bd5cf29fa9b0764aa1568732be024084b".toLowerCase(),
   "0xc765bddb93b0d1c1a88282ba0fa6b2d00e3e0c83".toLowerCase(),
-  "0x610b43e981960b45f818a71cd14c91d35cda8502".toLowerCase(),
+  "0x610b43e981960b45f818a71cd14c91d35cdA8502".toLowerCase(),
   "0x231278edd38b00b07fbd52120cef685b9baebcc1".toLowerCase(),
   "0xc4e637d37113192f4f1f060daebd7758de7f4131".toLowerCase(),
   "0xbeddF48499788607B4c2e704e9099561ab38Aae8".toLowerCase(),
@@ -42,8 +56,34 @@ const UNCX_CONTRACTS = new Set([
   "0xadb2437e6f65682b85f814fbc12fec0508a7b1d0".toLowerCase(),
 ]);
 
-// Track already-sent txs (to avoid duplicates)
-const sentTxs = new Set();
+// --- Resolve LP pair for V2 locks ---
+async function getV2PairSymbols(lpAddress, chainId) {
+  try {
+    const rpc = RPCS[chainId];
+    if (!rpc) return null;
+
+    const provider = new ethers.JsonRpcProvider(rpc);
+    const lp = new ethers.Contract(lpAddress, lpAbi, provider);
+
+    const [token0Addr, token1Addr] = await Promise.all([
+      lp.token0(),
+      lp.token1(),
+    ]);
+
+    const t0 = new ethers.Contract(token0Addr, erc20Abi, provider);
+    const t1 = new ethers.Contract(token1Addr, erc20Abi, provider);
+
+    const [symbol0, symbol1] = await Promise.all([
+      t0.symbol(),
+      t1.symbol(),
+    ]);
+
+    return `${symbol0} / ${symbol1}`;
+  } catch (err) {
+    console.error("⚠️ Failed to resolve LP pair:", err.message);
+    return null;
+  }
+}
 
 module.exports = async (req, res) => {
   try {
@@ -64,22 +104,11 @@ module.exports = async (req, res) => {
       body.txs?.[0]?.hash ||
       "N/A";
 
-    // ✅ Skip duplicate txs
-    if (sentTxs.has(txHash)) {
-      console.log(`⚠️ Already sent message for ${txHash}, skipping`);
-      return res.status(200).json({ ok: true, note: "duplicate skipped" });
-    }
-    sentTxs.add(txHash);
-
     const chains = {
       "0x1": { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
-      "1":   { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
-      "0x38":{ name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
-      "56":  { name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
-      "0x89":{ name: "Polygon", explorer: "https://polygonscan.com/tx/" },
-      "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/" },
+      "0x38": { name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
+      "0x89": { name: "Polygon", explorer: "https://polygonscan.com/tx/" },
       "0x2105": { name: "Base", explorer: "https://basescan.org/tx/" },
-      "8453":   { name: "Base", explorer: "https://basescan.org/tx/" },
     };
 
     const chainInfo = chains[chainId] || { name: chainId, explorer: "" };
@@ -89,7 +118,7 @@ module.exports = async (req, res) => {
     const logs = body.logs || [];
     const log = logs[0] || {};
     const eventName = log.name || log.decoded?.name || "";
-    const type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
+    let type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
 
     // expiry from decoded event
     const unlockTime = parseInt(log.decoded?.unlockTime || 0);
@@ -104,14 +133,23 @@ module.exports = async (req, res) => {
       source = "UNCX";
     }
 
-    // add sequential Lock ID
+    // add unique ID
     const lockId = makeLockId();
+
+    // Try to resolve pair if V2
+    let pairInfo = "";
+    if (type === "V2 Token" && log.decoded?.lpToken) {
+      const pair = await getV2PairSymbols(log.decoded.lpToken, chainId);
+      if (pair) {
+        pairInfo = `\n📊 Pair: ${pair}`;
+      }
+    }
 
     const message = `
 🔒 *New Lock Created* \`#${lockId}\`
 🌐 Chain: ${chainInfo.name}
 📌 Type: ${type}
-🔖 Source: ${source}
+🔖 Source: ${source}${pairInfo}
 ⏳ Unlocks: ${expiry}
 🔗 [View Tx](${explorerLink})
 `;
@@ -128,3 +166,4 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
+
