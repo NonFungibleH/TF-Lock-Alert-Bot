@@ -15,7 +15,6 @@ function formatUSD(num) {
     maximumFractionDigits: 2,
   })}`;
 }
-
 function makeLockId() {
   return lockCounter++;
 }
@@ -110,53 +109,57 @@ module.exports = async (req, res) => {
 
     if (type === "V2 Token") {
       try {
-        const provider = new ethers.providers.JsonRpcProvider(process.env.ALCHEMY_URL_BASE);
-        const lp = new ethers.Contract(contractAddr, LP_ABI, provider);
-        const [token0Addr, token1Addr, reserves, totalSupply] = await Promise.all([
-          lp.token0(),
-          lp.token1(),
-          lp.getReserves(),
-          lp.totalSupply()
-        ]);
+        const lpTokenAddr = log.decoded?.tokenAddress;
+        if (lpTokenAddr) {
+          const provider = new ethers.providers.JsonRpcProvider(process.env.ALCHEMY_URL_BASE);
+          const lp = new ethers.Contract(lpTokenAddr, LP_ABI, provider);
 
-        const amountLocked = log.decoded?.amount ? ethers.BigNumber.from(log.decoded.amount) : null;
-        if (amountLocked && totalSupply.gt(0)) {
-          const share = amountLocked.mul(ethers.constants.WeiPerEther).div(totalSupply);
-          const [r0, r1] = [reserves[0], reserves[1]];
-          const token0Share = ethers.BigNumber.from(r0).mul(share).div(ethers.constants.WeiPerEther);
-          const token1Share = ethers.BigNumber.from(r1).mul(share).div(ethers.constants.WeiPerEther);
-
-          const token0 = new ethers.Contract(token0Addr, ERC20_ABI, provider);
-          const token1 = new ethers.Contract(token1Addr, ERC20_ABI, provider);
-          const [sym0, sym1, dec0, dec1] = await Promise.all([
-            token0.symbol(), token1.symbol(), token0.decimals(), token1.decimals()
+          const [token0Addr, token1Addr, reserves, totalSupply] = await Promise.all([
+            lp.token0(),
+            lp.token1(),
+            lp.getReserves(),
+            lp.totalSupply()
           ]);
 
-          const amt0 = Number(ethers.utils.formatUnits(token0Share, dec0));
-          const amt1 = Number(ethers.utils.formatUnits(token1Share, dec1));
+          const amountLocked = log.decoded?.amount ? ethers.BigNumber.from(log.decoded.amount) : null;
+          if (amountLocked && totalSupply.gt(0)) {
+            const share = amountLocked.mul(ethers.constants.WeiPerEther).div(totalSupply);
+            const [r0, r1] = [reserves[0], reserves[1]];
+            const token0Share = ethers.BigNumber.from(r0).mul(share).div(ethers.constants.WeiPerEther);
+            const token1Share = ethers.BigNumber.from(r1).mul(share).div(ethers.constants.WeiPerEther);
 
-          // Get USD prices
-          let usdValue = 0;
-          try {
-            const cgPlatform = chainInfo.gecko;
-            const url = `https://api.coingecko.com/api/v3/simple/token_price/${cgPlatform}?contract_addresses=${token0Addr},${token1Addr}&vs_currencies=usd`;
-            const { data } = await axios.get(url);
-            const p0 = data[token0Addr.toLowerCase()]?.usd || 0;
-            const p1 = data[token1Addr.toLowerCase()]?.usd || 0;
-            usdValue = (amt0 * p0) + (amt1 * p1);
-          } catch (e) {
-            console.error("CoinGecko price lookup failed:", e.message);
-          }
+            const token0 = new ethers.Contract(token0Addr, ERC20_ABI, provider);
+            const token1 = new ethers.Contract(token1Addr, ERC20_ABI, provider);
+            const [sym0, sym1, dec0, dec1] = await Promise.all([
+              token0.symbol(), token1.symbol(), token0.decimals(), token1.decimals()
+            ]);
 
-          liquidityLine = `💰 Liquidity Locked: ${amt0.toFixed(2)} ${sym0} + ${amt1.toFixed(2)} ${sym1}`;
-          if (usdValue > 0) liquidityLine += ` (${formatUSD(usdValue)})`;
+            const amt0 = Number(ethers.utils.formatUnits(token0Share, dec0));
+            const amt1 = Number(ethers.utils.formatUnits(token1Share, dec1));
 
-          chartLinks = `📊 Charts: [DEXTools](https://www.dextools.io/app/en/${chainInfo.name.toLowerCase()}/pair-explorer/${contractAddr}) | [DexScreener](https://dexscreener.com/${chainInfo.name.toLowerCase()}/${contractAddr})`;
+            // Get USD prices
+            let usdValue = 0;
+            try {
+              const cgPlatform = chainInfo.gecko;
+              const url = `https://api.coingecko.com/api/v3/simple/token_price/${cgPlatform}?contract_addresses=${token0Addr},${token1Addr}&vs_currencies=usd`;
+              const { data } = await axios.get(url);
+              const p0 = data[token0Addr.toLowerCase()]?.usd || 0;
+              const p1 = data[token1Addr.toLowerCase()]?.usd || 0;
+              usdValue = (amt0 * p0) + (amt1 * p1);
+            } catch (e) {
+              console.error("CoinGecko price lookup failed:", e.message);
+            }
 
-          if (!SKIP_SNIFFER.has(sym0.toLowerCase())) {
-            snifferLine = `🛡 Safety: [TokenSniffer](https://tokensniffer.com/token/${token0Addr})`;
-          } else if (!SKIP_SNIFFER.has(sym1.toLowerCase())) {
-            snifferLine = `🛡 Safety: [TokenSniffer](https://tokensniffer.com/token/${token1Addr})`;
+            liquidityLine = `💰 Liquidity Locked: ${amt0.toFixed(2)} ${sym0} + ${amt1.toFixed(2)} ${sym1}`;
+            if (usdValue > 0) liquidityLine += ` (${formatUSD(usdValue)})`;
+
+            chartLinks = `📊 Charts: [DEXTools](https://www.dextools.io/app/en/${chainInfo.name.toLowerCase()}/pair-explorer/${lpTokenAddr}) | [DexScreener](https://dexscreener.com/${chainInfo.name.toLowerCase()}/${lpTokenAddr})`;
+
+            if (!SKIP_SNIFFER.has(sym0.toLowerCase())) {
+              snifferLine = `🛡 Safety: [TokenSniffer](https://tokensniffer.com/token/${token0Addr})`;
+            } else if (!SKIP_SNIFFER.has(sym1.toLowerCase())) {
+              snifferLine = `🛡 Safety: [TokenSniffer](https://tokensniffer.com/token/${token1Addr})`;
+            }
           }
         }
       } catch (err) {
