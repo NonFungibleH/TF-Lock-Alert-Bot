@@ -4,9 +4,8 @@ const { ethers } = require("ethers");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Track seen transactions
+// Track seen transactions to avoid duplicates
 const sentTxs = new Set();
-let lockCounter = 1;
 
 // Helpers
 function formatUSD(num) {
@@ -14,9 +13,6 @@ function formatUSD(num) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
-}
-function makeLockId() {
-  return lockCounter++;
 }
 
 // Known lock contract sources
@@ -100,8 +96,6 @@ module.exports = async (req, res) => {
     if (TEAM_FINANCE_CONTRACTS.has(contractAddr)) source = "Team Finance";
     else if (UNCX_CONTRACTS.has(contractAddr)) source = "UNCX";
 
-    const lockId = makeLockId();
-
     // Enrichment lines
     let liquidityLine = "";
     let chartLinks = "";
@@ -109,11 +103,11 @@ module.exports = async (req, res) => {
 
     if (type === "V2 Token") {
       try {
-        const lpTokenAddr = log.decoded?.tokenAddress;
+        // LP token is from event args, not log.address
+        const lpTokenAddr = log.decoded?.tokenAddress || log.decoded?.lpToken;
         if (lpTokenAddr) {
           const provider = new ethers.providers.JsonRpcProvider(process.env.ALCHEMY_URL_BASE);
           const lp = new ethers.Contract(lpTokenAddr, LP_ABI, provider);
-
           const [token0Addr, token1Addr, reserves, totalSupply] = await Promise.all([
             lp.token0(),
             lp.token1(),
@@ -167,18 +161,12 @@ module.exports = async (req, res) => {
       }
     }
 
-    const message = `
-🔒 *New Lock Created* \`#${lockId}\`
-🌐 Chain: ${chainInfo.name}
-📌 Type: ${type}
-🔖 Source: ${source}
-${liquidityLine}
-
-${chartLinks}
-${snifferLine}
-
-🔗 [View Tx](${explorerLink})
-`;
+    // Build final message (no blank lines if empty)
+    let message = `🔒 *New Lock Created*\n🌐 Chain: ${chainInfo.name}\n📌 Type: ${type}\n🔖 Source: ${source}`;
+    if (liquidityLine) message += `\n${liquidityLine}`;
+    if (chartLinks) message += `\n\n${chartLinks}`;
+    if (snifferLine) message += `\n${snifferLine}`;
+    message += `\n\n🔗 [View Tx](${explorerLink})`;
 
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
