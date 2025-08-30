@@ -3,31 +3,12 @@ const { ethers } = require("ethers");
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const RPCS = {
-  "0x1": "https://rpc.ankr.com/eth",
-  "0x38": "https://rpc.ankr.com/bsc",
-  "0x89": "https://rpc.ankr.com/polygon",
-  "0x2105": "https://mainnet.base.org",
-};
 
-function formatDate(unixTime) {
-  if (!unixTime) return "N/A";
-  const date = new Date(unixTime * 1000);
-  return date.toISOString().replace("T", " ").replace(".000Z", " UTC");
-}
-
-// Incremental lock ID
+// Simple in-memory counter for lock IDs
 let counter = 1;
 function makeLockId() {
   return (counter++).toString().padStart(4, "0");
 }
-
-// Minimal ABIs
-const lpAbi = [
-  "function token0() view returns (address)",
-  "function token1() view returns (address)",
-];
-const erc20Abi = ["function symbol() view returns (string)"];
 
 // Known lock contract sources
 const TEAM_FINANCE_CONTRACTS = new Set([
@@ -56,34 +37,35 @@ const UNCX_CONTRACTS = new Set([
   "0xadb2437e6f65682b85f814fbc12fec0508a7b1d0".toLowerCase(),
 ]);
 
-// --- Resolve LP pair for V2 locks ---
-async function getV2PairSymbols(lpAddress, chainId) {
+// ERC20 ABI (minimal)
+const ERC20_ABI = [
+  "function symbol() view returns (string)",
+];
+
+// UniswapV2 LP ABI (minimal)
+const UNI_V2_LP_ABI = [
+  "function token0() view returns (address)",
+  "function token1() view returns (address)",
+];
+
+// Simple ethers provider (Base as default)
+const provider = new ethers.JsonRpcProvider("https://mainnet.base.org");
+
+async function tryResolvePair(lpTokenAddress) {
   try {
-    const rpc = RPCS[chainId];
-    if (!rpc) return null;
-
-    const provider = new ethers.JsonRpcProvider(rpc);
-    const lp = new ethers.Contract(lpAddress, lpAbi, provider);
-
-    const [token0Addr, token1Addr] = await Promise.all([
-      lp.token0(),
-      lp.token1(),
-    ]);
-
-    const t0 = new ethers.Contract(token0Addr, erc20Abi, provider);
-    const t1 = new ethers.Contract(token1Addr, erc20Abi, provider);
-
-    const [symbol0, symbol1] = await Promise.all([
-      t0.symbol(),
-      t1.symbol(),
-    ]);
-
-    return `${symbol0} / ${symbol1}`;
+    const lp = new ethers.Contract(lpTokenAddress, UNI_V2_LP_ABI, provider);
+    const [token0, token1] = await Promise.all([lp.token0(), lp.token1()]);
+    const t0 = new ethers.Contract(token0, ERC20_ABI, provider);
+    const t1 = new ethers.Contract(token1, ERC20_ABI, provider);
+    const [s0, s1] = await Promise.all([t0.symbol(), t1.symbol()]);
+    return `${s0}/${s1}`;
   } catch (err) {
-    console.error("⚠️ Failed to resolve LP pair:", err.message);
+    console.error("❌ Could not resolve pair:", err.message);
     return null;
   }
 }
+
+const sentTxs = new Set();
 
 module.exports = async (req, res) => {
   try {
@@ -104,11 +86,22 @@ module.exports = async (req, res) => {
       body.txs?.[0]?.hash ||
       "N/A";
 
+    // Prevent duplicate sends
+    if (sentTxs.has(txHash)) {
+      console.log("⏩ Skipping duplicate tx:", txHash);
+      return res.status(200).json({ ok: true, skipped: true });
+    }
+    sentTxs.add(txHash);
+
     const chains = {
       "0x1": { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
-      "0x38": { name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
-      "0x89": { name: "Polygon", explorer: "https://polygonscan.com/tx/" },
+      "1":   { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
+      "0x38":{ name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
+      "56":  { name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
+      "0x89":{ name: "Polygon", explorer: "https://polygonscan.com/tx/" },
+      "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/" },
       "0x2105": { name: "Base", explorer: "https://basescan.org/tx/" },
+      "8453":   { name: "Base", explorer: "https://basescan.org/tx/" },
     };
 
     const chainInfo = chains[chainId] || { name: chainId, explorer: "" };
@@ -118,11 +111,7 @@ module.exports = async (req, res) => {
     const logs = body.logs || [];
     const log = logs[0] || {};
     const eventName = log.name || log.decoded?.name || "";
-    let type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
-
-    // expiry from decoded event
-    const unlockTime = parseInt(log.decoded?.unlockTime || 0);
-    const expiry = unlockTime ? formatDate(unlockTime) : "N/A";
+    const type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
 
     // detect lock source
     const contractAddr = (log.address || "").toLowerCase();
@@ -136,12 +125,12 @@ module.exports = async (req, res) => {
     // add unique ID
     const lockId = makeLockId();
 
-    // Try to resolve pair if V2
-    let pairInfo = "";
+    // Try resolve pair for V2 locks
+    let pairLine = "";
     if (type === "V2 Token" && log.decoded?.lpToken) {
-      const pair = await getV2PairSymbols(log.decoded.lpToken, chainId);
+      const pair = await tryResolvePair(log.decoded.lpToken);
       if (pair) {
-        pairInfo = `\n📊 Pair: ${pair}`;
+        pairLine = `📊 Pair: ${pair}\n`;
       }
     }
 
@@ -149,9 +138,8 @@ module.exports = async (req, res) => {
 🔒 *New Lock Created* \`#${lockId}\`
 🌐 Chain: ${chainInfo.name}
 📌 Type: ${type}
-🔖 Source: ${source}${pairInfo}
-⏳ Unlocks: ${expiry}
-🔗 [View Tx](${explorerLink})
+🔖 Source: ${source}
+${pairLine}🔗 [View Tx](${explorerLink})
 `;
 
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
