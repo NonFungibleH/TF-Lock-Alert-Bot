@@ -176,14 +176,6 @@ ${snifferLine}
 🔗 [View Tx](${explorerLink})
 `;
 
-    // Send to private DM
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_CHAT_ID,
-      text: message,
-      parse_mode: "Markdown",
-      disable_web_page_preview: true,
-    });
-
     // Send to group
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_GROUP_CHAT_ID,
