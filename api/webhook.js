@@ -9,10 +9,10 @@ function formatDate(unixTime) {
   return date.toISOString().replace("T", " ").replace(".000Z", " UTC");
 }
 
-// Generate unique lock ID: YYYYMMDD-HHMM
+// 🔢 Simple counter for Lock IDs (resets if server restarts)
+let counter = 1;
 function makeLockId() {
-  const now = new Date();
-  return now.toISOString().replace(/[-:]/g, "").slice(0, 12);
+  return (counter++).toString().padStart(4, "0");
 }
 
 // Known lock contract sources
@@ -34,7 +34,7 @@ const UNCX_CONTRACTS = new Set([
   "0xfe88dab083964c56429baa01f37ec2265abf1557".toLowerCase(),
   "0x7229247bd5cf29fa9b0764aa1568732be024084b".toLowerCase(),
   "0xc765bddb93b0d1c1a88282ba0fa6b2d00e3e0c83".toLowerCase(),
-  "0x610b43e981960b45f818a71cd14c91d35cdA8502".toLowerCase(),
+  "0x610b43e981960b45f818a71cd14c91d35cda8502".toLowerCase(),
   "0x231278edd38b00b07fbd52120cef685b9baebcc1".toLowerCase(),
   "0xc4e637d37113192f4f1f060daebd7758de7f4131".toLowerCase(),
   "0xbeddF48499788607B4c2e704e9099561ab38Aae8".toLowerCase(),
@@ -42,7 +42,7 @@ const UNCX_CONTRACTS = new Set([
   "0xadb2437e6f65682b85f814fbc12fec0508a7b1d0".toLowerCase(),
 ]);
 
-// Simple in-memory dedupe set
+// Track already-sent txs (to avoid duplicates)
 const sentTxs = new Set();
 
 module.exports = async (req, res) => {
@@ -59,16 +59,14 @@ module.exports = async (req, res) => {
     }
 
     const chainId = body.chainId;
-    const logs = body.logs || [];
-    const log = logs[0] || {};
     const txHash =
-      log.transactionHash ||
+      body.logs?.[0]?.transactionHash ||
       body.txs?.[0]?.hash ||
       "N/A";
 
-    // 🚨 Dedupe check
+    // ✅ Skip duplicate txs
     if (sentTxs.has(txHash)) {
-      console.log(`⚠️ Already sent message for ${txHash}, skipping duplicate`);
+      console.log(`⚠️ Already sent message for ${txHash}, skipping`);
       return res.status(200).json({ ok: true, note: "duplicate skipped" });
     }
     sentTxs.add(txHash);
@@ -88,6 +86,8 @@ module.exports = async (req, res) => {
     const explorerLink = chainInfo.explorer ? `${chainInfo.explorer}${txHash}` : txHash;
 
     // detect type from logs
+    const logs = body.logs || [];
+    const log = logs[0] || {};
     const eventName = log.name || log.decoded?.name || "";
     const type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
 
@@ -104,7 +104,7 @@ module.exports = async (req, res) => {
       source = "UNCX";
     }
 
-    // add unique ID
+    // add sequential Lock ID
     const lockId = makeLockId();
 
     const message = `
@@ -128,4 +128,3 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
-
