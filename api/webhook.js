@@ -69,6 +69,20 @@ const chains = {
   "8453":  { name: "Base", explorer: "https://basescan.org/tx/", gecko: "base" },
 };
 
+// Event → Type mapping
+function getLockType(eventName) {
+  if (["onNewLock", "onIncrementLock", "onRelock", "onSplitLock"].includes(eventName)) {
+    return "V2 Token";
+  }
+  if (eventName === "onLock") {
+    return "V3 Token";
+  }
+  if (eventName === "LiquidityLocked") {
+    return "V4 Token";
+  }
+  return "Unknown";
+}
+
 module.exports = async (req, res) => {
   try {
     if (req.method !== "POST") return res.status(200).json({ ok: true });
@@ -88,13 +102,10 @@ module.exports = async (req, res) => {
     const explorerLink = `${chainInfo.explorer}${txHash}`;
     const log = body.logs?.[0] || {};
     const eventName = log.name || log.decoded?.name || "";
+    const type = getLockType(eventName);
 
-    // Classification
-    let type = "Unknown";
-    if (eventName === "DepositNFT" || eventName === "onLock") {
-      type = "V3 Token";
-    } else if (eventName === "onNewLock" || eventName === "onDeposit") {
-      type = "V2 Token";
+    if (type === "Unknown") {
+      console.log("⚠️ Unhandled event:", eventName);
     }
 
     // Source
@@ -103,16 +114,16 @@ module.exports = async (req, res) => {
     if (TEAM_FINANCE_CONTRACTS.has(contractAddr)) source = "Team Finance";
     else if (UNCX_CONTRACTS.has(contractAddr)) source = "UNCX";
 
-    // Enrichment lines
+    // (Optional enrichment kept same as before)
     let liquidityLine = "";
     let chartLinks = "";
     let snifferLine = "";
 
+    // V2 enrichment only (lpToken available)
     if (type === "V2 Token") {
       try {
         const provider = new ethers.providers.JsonRpcProvider(process.env.ALCHEMY_URL_BASE);
-
-        const lpAddr = (log.decoded?.tokenAddress || log.decoded?.lpToken || "").toLowerCase();
+        const lpAddr = (log.decoded?.lpToken || "").toLowerCase();
         if (lpAddr) {
           const lp = new ethers.Contract(lpAddr, LP_ABI, provider);
           const [token0Addr, token1Addr, reserves, totalSupply] = await Promise.all([
@@ -181,7 +192,7 @@ ${snifferLine}
 🔗 [View Tx](${explorerLink})
 `;
 
-    // Send to group
+    // Send to group only
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_GROUP_CHAT_ID,
       text: message,
@@ -196,4 +207,3 @@ ${snifferLine}
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
-
