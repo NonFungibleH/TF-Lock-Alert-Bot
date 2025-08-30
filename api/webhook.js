@@ -92,7 +92,11 @@ module.exports = async (req, res) => {
       sentTxs.add(txHash);
 
       const eventName = log.name || log.decoded?.name || "";
-      if (!allowedEvents.has(eventName)) continue; // skip non-locks
+
+      if (!allowedEvents.has(eventName)) {
+        console.log(`ℹ️ Ignored event: ${eventName} in tx ${txHash}`);
+        continue; // skip non-locks
+      }
 
       const explorerLink = `${chainInfo.explorer}${txHash}`;
       const type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
@@ -197,3 +201,4 @@ ${snifferLine}
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
+
