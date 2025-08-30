@@ -1,15 +1,24 @@
 const axios = require("axios");
 const { ethers } = require("ethers");
 
-// Telegram settings
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// In-memory set to avoid duplicate TX alerts
+// Track seen transactions
 const sentTxs = new Set();
-
-// Simple counter for lock IDs
 let lockCounter = 1;
+
+// Helpers
+function formatUSD(num) {
+  return `$${Number(num).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function makeLockId() {
+  return lockCounter++;
+}
 
 // Known lock contract sources
 const TEAM_FINANCE_CONTRACTS = new Set([
@@ -38,116 +47,145 @@ const UNCX_CONTRACTS = new Set([
   "0xadb2437e6f65682b85f814fbc12fec0508a7b1d0".toLowerCase(),
 ]);
 
-// Skip TokenSniffer for majors
-const SKIP_SNIFFER = new Set(["ETH", "WETH", "USDC", "USDT", "DAI", "WBTC"]);
-
-// Minimal ABIs
-const UNI_V2_LP_ABI = [
+// ABIs
+const ERC20_ABI = [
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)"
+];
+const LP_ABI = [
   "function token0() view returns (address)",
   "function token1() view returns (address)",
+  "function getReserves() view returns (uint112,uint112,uint32)",
+  "function totalSupply() view returns (uint256)"
 ];
-const ERC20_ABI = ["function symbol() view returns (string)"];
 
-// Resolve V2 pair info + links
-async function tryResolvePair(lpTokenAddress, chain, provider) {
-  try {
-    const lp = new ethers.Contract(lpTokenAddress, UNI_V2_LP_ABI, provider);
-    const [token0, token1] = await Promise.all([lp.token0(), lp.token1()]);
-    const t0 = new ethers.Contract(token0, ERC20_ABI, provider);
-    const t1 = new ethers.Contract(token1, ERC20_ABI, provider);
-    const [s0, s1] = await Promise.all([t0.symbol(), t1.symbol()]);
-    const pair = `${s0}/${s1}`;
+// Skip Sniffer tokens
+const SKIP_SNIFFER = new Set(["eth", "usdc", "usdt", "weth", "wbnb", "wmatic"]);
 
-    // TokenSniffer (safety check) if not in skip list
-    let snifferLine = "";
-    const snifferLinks = [];
-    if (!SKIP_SNIFFER.has(s0)) {
-      snifferLinks.push(`[TokenSniffer ${s0}](https://tokensniffer.com/token/${chain}/${token0})`);
-    }
-    if (!SKIP_SNIFFER.has(s1)) {
-      snifferLinks.push(`[TokenSniffer ${s1}](https://tokensniffer.com/token/${chain}/${token1})`);
-    }
-    if (snifferLinks.length > 0) {
-      snifferLine = `\n🛡️ ${snifferLinks.join(" | ")}\n`;
-    }
-
-    // DEXTools + Dexscreener links
-    const dexLinks = `📈 [DEXTools](https://www.dextools.io/app/en/${chain}/pair-explorer/${lpTokenAddress}) | [Dexscreener](https://dexscreener.com/${chain}/${lpTokenAddress})`;
-
-    return { pair, snifferLine, dexLinks };
-  } catch (err) {
-    console.error("❌ Could not resolve pair:", err.message);
-    return null;
-  }
-}
+// Map chain to explorer + coingecko platform
+const chains = {
+  "0x1":   { name: "Ethereum", explorer: "https://etherscan.io/tx/", gecko: "ethereum" },
+  "1":     { name: "Ethereum", explorer: "https://etherscan.io/tx/", gecko: "ethereum" },
+  "0x38":  { name: "BNB Chain", explorer: "https://bscscan.com/tx/", gecko: "binance-smart-chain" },
+  "56":    { name: "BNB Chain", explorer: "https://bscscan.com/tx/", gecko: "binance-smart-chain" },
+  "0x89":  { name: "Polygon", explorer: "https://polygonscan.com/tx/", gecko: "polygon-pos" },
+  "137":   { name: "Polygon", explorer: "https://polygonscan.com/tx/", gecko: "polygon-pos" },
+  "0x2105":{ name: "Base", explorer: "https://basescan.org/tx/", gecko: "base" },
+  "8453":  { name: "Base", explorer: "https://basescan.org/tx/", gecko: "base" },
+};
 
 module.exports = async (req, res) => {
   try {
     if (req.method !== "POST") return res.status(200).json({ ok: true });
     const body = req.body || {};
-    console.log("🔍 Incoming payload:", JSON.stringify(body, null, 2));
 
     if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
 
     const chainId = body.chainId;
-    const txHash = body.logs?.[0]?.transactionHash || body.txs?.[0]?.hash || "N/A";
+    const txHash = body.logs?.[0]?.transactionHash || body.txs?.[0]?.hash;
+    if (!txHash) return res.status(200).json({ ok: true, note: "No txHash" });
 
-    // prevent duplicate alerts
-    if (sentTxs.has(txHash)) {
-      return res.status(200).json({ ok: true, note: "Already sent" });
-    }
+    // Skip dupes
+    if (sentTxs.has(txHash)) return res.status(200).json({ ok: true, note: "Duplicate skipped" });
     sentTxs.add(txHash);
 
-    const chains = {
-      "0x1": { name: "Ethereum", explorer: "https://etherscan.io/tx/", slug: "ethereum" },
-      "0x38": { name: "BNB Chain", explorer: "https://bscscan.com/tx/", slug: "bsc" },
-      "0x89": { name: "Polygon", explorer: "https://polygonscan.com/tx/", slug: "polygon" },
-      "0x2105": { name: "Base", explorer: "https://basescan.org/tx/", slug: "base" },
-    };
-
-    const chainInfo = chains[chainId] || { name: chainId, explorer: "", slug: "" };
-    const explorerLink = chainInfo.explorer ? `${chainInfo.explorer}${txHash}` : txHash;
-
-    // detect event type
+    const chainInfo = chains[chainId] || { name: chainId, explorer: "" };
+    const explorerLink = `${chainInfo.explorer}${txHash}`;
     const log = body.logs?.[0] || {};
     const eventName = log.name || log.decoded?.name || "";
     const type = eventName === "DepositNFT" ? "V3 Token" : "V2 Token";
 
-    // detect source
+    // Source
     const contractAddr = (log.address || "").toLowerCase();
     let source = "Unknown";
     if (TEAM_FINANCE_CONTRACTS.has(contractAddr)) source = "Team Finance";
     else if (UNCX_CONTRACTS.has(contractAddr)) source = "UNCX";
 
-    // create lock ID
-    const lockId = lockCounter++;
+    const lockId = makeLockId();
 
-    // Build message
-    let message = `
+    // Enrichment lines
+    let liquidityLine = "";
+    let chartLinks = "";
+    let snifferLine = "";
+
+    if (type === "V2 Token") {
+      try {
+        const provider = new ethers.providers.JsonRpcProvider(process.env.ALCHEMY_URL_BASE);
+        const lp = new ethers.Contract(contractAddr, LP_ABI, provider);
+        const [token0Addr, token1Addr, reserves, totalSupply] = await Promise.all([
+          lp.token0(),
+          lp.token1(),
+          lp.getReserves(),
+          lp.totalSupply()
+        ]);
+
+        const amountLocked = log.decoded?.amount ? ethers.BigNumber.from(log.decoded.amount) : null;
+        if (amountLocked && totalSupply.gt(0)) {
+          const share = amountLocked.mul(ethers.constants.WeiPerEther).div(totalSupply);
+          const [r0, r1] = [reserves[0], reserves[1]];
+          const token0Share = ethers.BigNumber.from(r0).mul(share).div(ethers.constants.WeiPerEther);
+          const token1Share = ethers.BigNumber.from(r1).mul(share).div(ethers.constants.WeiPerEther);
+
+          const token0 = new ethers.Contract(token0Addr, ERC20_ABI, provider);
+          const token1 = new ethers.Contract(token1Addr, ERC20_ABI, provider);
+          const [sym0, sym1, dec0, dec1] = await Promise.all([
+            token0.symbol(), token1.symbol(), token0.decimals(), token1.decimals()
+          ]);
+
+          const amt0 = Number(ethers.utils.formatUnits(token0Share, dec0));
+          const amt1 = Number(ethers.utils.formatUnits(token1Share, dec1));
+
+          // Get USD prices
+          let usdValue = 0;
+          try {
+            const cgPlatform = chainInfo.gecko;
+            const url = `https://api.coingecko.com/api/v3/simple/token_price/${cgPlatform}?contract_addresses=${token0Addr},${token1Addr}&vs_currencies=usd`;
+            const { data } = await axios.get(url);
+            const p0 = data[token0Addr.toLowerCase()]?.usd || 0;
+            const p1 = data[token1Addr.toLowerCase()]?.usd || 0;
+            usdValue = (amt0 * p0) + (amt1 * p1);
+          } catch (e) {
+            console.error("CoinGecko price lookup failed:", e.message);
+          }
+
+          liquidityLine = `💰 Liquidity Locked: ${amt0.toFixed(2)} ${sym0} + ${amt1.toFixed(2)} ${sym1}`;
+          if (usdValue > 0) liquidityLine += ` (${formatUSD(usdValue)})`;
+
+          chartLinks = `📊 Charts: [DEXTools](https://www.dextools.io/app/en/${chainInfo.name.toLowerCase()}/pair-explorer/${contractAddr}) | [DexScreener](https://dexscreener.com/${chainInfo.name.toLowerCase()}/${contractAddr})`;
+
+          if (!SKIP_SNIFFER.has(sym0.toLowerCase())) {
+            snifferLine = `🛡 Safety: [TokenSniffer](https://tokensniffer.com/token/${token0Addr})`;
+          } else if (!SKIP_SNIFFER.has(sym1.toLowerCase())) {
+            snifferLine = `🛡 Safety: [TokenSniffer](https://tokensniffer.com/token/${token1Addr})`;
+          }
+        }
+      } catch (err) {
+        console.error("Liquidity enrich error:", err.message);
+      }
+    }
+
+    const message = `
 🔒 *New Lock Created* \`#${lockId}\`
 🌐 Chain: ${chainInfo.name}
 📌 Type: ${type}
 🔖 Source: ${source}
+${liquidityLine}
+
+${chartLinks}
+${snifferLine}
+
+🔗 [View Tx](${explorerLink})
 `;
-
-    // If V2, try resolve pair + links
-    if (type === "V2 Token" && log.decoded?.lpToken && chainInfo.slug) {
-      const provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL);
-      const pairInfo = await tryResolvePair(log.decoded.lpToken, chainInfo.slug, provider);
-      if (pairInfo) {
-        message += `📊 Pair: ${pairInfo.pair}${pairInfo.snifferLine}${pairInfo.dexLinks}\n`;
-      }
-    }
-
-    message += `\n🔗 [View Tx](${explorerLink})`;
 
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
       text: message,
       parse_mode: "Markdown",
+      disable_web_page_preview: true,
     });
 
     return res.status(200).json({ status: "sent" });
+
   } catch (err) {
     console.error("❌ Telegram webhook error:", err.response?.data || err.message);
     return res.status(200).json({ ok: true, error: err.message });
