@@ -3,8 +3,9 @@ const { ethers } = require("ethers");
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 
-// Track seen transactions to avoid duplicates
+// Track seen transactions
 const sentTxs = new Set();
 
 // Helpers
@@ -103,11 +104,12 @@ module.exports = async (req, res) => {
 
     if (type === "V2 Token") {
       try {
-        // LP token is from event args, not log.address
-        const lpTokenAddr = log.decoded?.tokenAddress || log.decoded?.lpToken;
-        if (lpTokenAddr) {
-          const provider = new ethers.providers.JsonRpcProvider(process.env.ALCHEMY_URL_BASE);
-          const lp = new ethers.Contract(lpTokenAddr, LP_ABI, provider);
+        const provider = new ethers.providers.JsonRpcProvider(process.env.ALCHEMY_URL_BASE);
+
+        // Correct: LP token comes from decoded args
+        const lpAddr = (log.decoded?.tokenAddress || log.decoded?.lpToken || "").toLowerCase();
+        if (lpAddr) {
+          const lp = new ethers.Contract(lpAddr, LP_ABI, provider);
           const [token0Addr, token1Addr, reserves, totalSupply] = await Promise.all([
             lp.token0(),
             lp.token1(),
@@ -147,7 +149,7 @@ module.exports = async (req, res) => {
             liquidityLine = `💰 Liquidity Locked: ${amt0.toFixed(2)} ${sym0} + ${amt1.toFixed(2)} ${sym1}`;
             if (usdValue > 0) liquidityLine += ` (${formatUSD(usdValue)})`;
 
-            chartLinks = `📊 Charts: [DEXTools](https://www.dextools.io/app/en/${chainInfo.name.toLowerCase()}/pair-explorer/${lpTokenAddr}) | [DexScreener](https://dexscreener.com/${chainInfo.name.toLowerCase()}/${lpTokenAddr})`;
+            chartLinks = `📊 Charts: [DEXTools](https://www.dextools.io/app/en/${chainInfo.name.toLowerCase()}/pair-explorer/${lpAddr}) | [DexScreener](https://dexscreener.com/${chainInfo.name.toLowerCase()}/${lpAddr})`;
 
             if (!SKIP_SNIFFER.has(sym0.toLowerCase())) {
               snifferLine = `🛡 Safety: [TokenSniffer](https://tokensniffer.com/token/${token0Addr})`;
@@ -161,15 +163,30 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Build final message (no blank lines if empty)
-    let message = `🔒 *New Lock Created*\n🌐 Chain: ${chainInfo.name}\n📌 Type: ${type}\n🔖 Source: ${source}`;
-    if (liquidityLine) message += `\n${liquidityLine}`;
-    if (chartLinks) message += `\n\n${chartLinks}`;
-    if (snifferLine) message += `\n${snifferLine}`;
-    message += `\n\n🔗 [View Tx](${explorerLink})`;
+    const message = `
+🔒 *New Lock Created*
+🌐 Chain: ${chainInfo.name}
+📌 Type: ${type}
+🔖 Source: ${source}
+${liquidityLine}
 
+${chartLinks}
+${snifferLine}
+
+🔗 [View Tx](${explorerLink})
+`;
+
+    // Send to private DM
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_CHAT_ID,
+      text: message,
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+    });
+
+    // Send to group
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_GROUP_CHAT_ID,
       text: message,
       parse_mode: "Markdown",
       disable_web_page_preview: true,
