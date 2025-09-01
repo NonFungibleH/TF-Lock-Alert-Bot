@@ -10,13 +10,6 @@ const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 // -----------------------------------------
 const sentTxs = new Set();
 
-function formatUSD(num) {
-  return `$${Number(num).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
 function toDecChainId(maybeHex) {
   if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
     return String(parseInt(maybeHex, 16));
@@ -64,26 +57,20 @@ const UNCX_CONTRACTS = new Set([
 const KNOWN_LOCKERS = new Set([...TEAM_FINANCE_CONTRACTS, ...UNCX_CONTRACTS]);
 
 // -----------------------------------------
-// ABIs & constants
-// -----------------------------------------
-const ERC20_ABI = [
-  "function symbol() view returns (string)",
-  "function decimals() view returns (uint8)"
-];
-
-const LP_ABI = [
-  "function token0() view returns (address)",
-  "function token1() view returns (address)",
-  "function getReserves() view returns (uint112,uint112,uint32)",
-  "function totalSupply() view returns (uint256)"
-];
-
 // Events we consider a **new lock**
-const LOCK_EVENTS = new Set(["onNewLock", "onDeposit", "onLock", "LiquidityLocked"]);
+// -----------------------------------------
+const LOCK_EVENTS = new Set([
+  "onNewLock",       // UNCX V2
+  "onDeposit",       // UNCX
+  "onLock",          // UNCX V3
+  "LiquidityLocked", // UNCX V4
+  "Deposit",         // Team Finance ERC20
+  "DepositNFT"       // Team Finance V3/NFT
+]);
 
-// Function selectors (first 4 bytes of input) for Team Finance
+// Function selectors for Team Finance `lockToken`
 const LOCK_FUNCTION_SELECTORS = new Set([
-  "0x5af06fed", // lockToken(address,address,uint256,uint256,uint256,bool,address)
+  "0x5af06fed", // lockToken(address,address,uint256,uint256,bool,address)
 ]);
 
 // -----------------------------------------
@@ -140,21 +127,24 @@ module.exports = async (req, res) => {
       eventName === "onDeposit"       ? "V2 Token" :
       eventName === "onLock"          ? "V3 Token" :
       eventName === "LiquidityLocked" ? "V4 Token" :
-      isFuncLock                      ? "V2 Token" : "Unknown";
+      eventName === "Deposit"         ? "V2 Token" :       // Team Finance ERC20
+      eventName === "DepositNFT"      ? "V3 Token" :       // Team Finance NFT
+      isFuncLock                      ? "V2 Token" :
+      "Unknown";
 
     const lockerAddr = (lockLog.address || "").toLowerCase();
     const source = TEAM_FINANCE_CONTRACTS.has(lockerAddr) ? "Team Finance"
                   : UNCX_CONTRACTS.has(lockerAddr)        ? "UNCX"
                   : "Unknown";
 
-    const parts = [];
-    parts.push("🔒 *New Lock Created*");
-    parts.push(`🌐 Chain: ${chain.name}`);
-    parts.push(`📌 Type: ${type}`);
-    parts.push(`🔖 Source: ${source}`);
-    parts.push(`\n🔗 [View Tx](${explorerLink})`);
+    const message = `
+🔒 *New Lock Created*
+🌐 Chain: ${chain.name}
+📌 Type: ${type}
+🔖 Source: ${source}
 
-    const message = parts.join("\n");
+🔗 [View Tx](${explorerLink})
+`;
 
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_GROUP_CHAT_ID,
