@@ -45,23 +45,41 @@ const UNCX_CONTRACTS = new Set([
   "0x231278edd38b00b07fbd52120cef685b9baebcc1", // BASE V3
   "0xc4e637d37113192f4f1f060daebd7758de7f4131", // BASE V2 UniSwap
   "0xbeddF48499788607B4c2e704e9099561ab38Aae8", // BASE V2 SushiSwap
-  "0x40f6301edb774e8b22adc874f6cb17242baeb8c4", // Poygon V3
+  "0x40f6301edb774e8b22adc874f6cb17242baeb8c4", // Polygon V3
   "0xadb2437e6f65682b85f814fbc12fec0508a7b1d0", // Polygon V2 QuickSwap
 ].map(s => s.toLowerCase()));
 
 const KNOWN_LOCKERS = new Set([...TEAM_FINANCE_CONTRACTS, ...UNCX_CONTRACTS]);
 
 // -----------------------------------------
-// Events
+// Events (only NEW locks)
 // -----------------------------------------
 const LOCK_EVENTS = new Set([
-  "onNewLock",
-  "onDeposit",
-  "onLock",
-  "LiquidityLocked",
-  "Deposit",      // Team Finance
-  "DepositNFT"    // Team Finance
+  "onNewLock",       // Team Finance V2
+  "onDeposit",       // UNCX V2
+  "onLock",          // UNCX V3
+  "LiquidityLocked", // UNCX V4
+  "Deposit",         // Team Finance ERC20
+  "DepositNFT"       // Team Finance NFTs
 ]);
+
+// Function selectors (for fallback detection)
+const TEAM_FINANCE_SELECTORS = new Set([
+  "0x5af06fed" // lockToken(address,address,uint256,uint256,bool,address)
+]);
+
+function getLockType(eventName, isFuncLock = false) {
+  switch (eventName) {
+    case "onDeposit":       return "UNCX V2 Lock";
+    case "onLock":          return "UNCX V3 Lock";
+    case "LiquidityLocked": return "UNCX V4 Lock";
+    case "onNewLock":       return "Team Finance V2 Lock";
+    case "Deposit":         return "Team Finance Token Lock";
+    case "DepositNFT":      return "Team Finance NFT Lock";
+    case "lockToken":       return "Team Finance Token Lock";
+    default: return isFuncLock ? "Team Finance Token Lock" : "Unknown";
+  }
+}
 
 // -----------------------------------------
 // Webhook
@@ -78,31 +96,29 @@ module.exports = async (req, res) => {
 
     const logs = Array.isArray(body.logs) ? body.logs : [];
 
-    // Debug log every incoming event
-    logs.forEach(l => {
-      console.log("📜 Incoming log:", {
-        address: l.address,
-        name: l.name,
-        eventName: l.eventName,
-        decodedName: l.decoded?.name,
-        decodedEvent: l.decoded?.event
-      });
-    });
-
     let lockLog = logs.find(l => {
       const addr = (l.address || "").toLowerCase();
-      const ev =
-        l.name ||
-        l.eventName ||
-        l.decoded?.name ||
-        l.decoded?.event ||
-        "";
+      const ev = l.name || l.eventName || l.decoded?.name || l.decoded?.event || "";
       return KNOWN_LOCKERS.has(addr) && LOCK_EVENTS.has(ev);
     });
 
-    if (!lockLog) {
-      return res.status(200).json({ ok: true, note: "No lock event detected" });
+    // Fallback: check tx input for lockToken
+    let isFuncLock = false;
+    if (!lockLog && body.txs?.length) {
+      const tx = body.txs[0];
+      const toAddr = (tx.to || "").toLowerCase();
+      const input = (tx.input || "").toLowerCase();
+      if (TEAM_FINANCE_CONTRACTS.has(toAddr)) {
+        for (const sel of TEAM_FINANCE_SELECTORS) {
+          if (input.startsWith(sel)) {
+            isFuncLock = true;
+            lockLog = { address: toAddr, transactionHash: tx.hash, name: "lockToken" };
+          }
+        }
+      }
     }
+
+    if (!lockLog) return res.status(200).json({ ok: true, note: "No lock event detected" });
 
     const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
     if (!txHash) return res.status(200).json({ ok: true, note: "No txHash" });
@@ -110,28 +126,15 @@ module.exports = async (req, res) => {
     if (sentTxs.has(txHash)) return res.status(200).json({ ok: true, note: "Duplicate skipped" });
     sentTxs.add(txHash);
 
-    const eventName =
-      lockLog.name ||
-      lockLog.eventName ||
-      lockLog.decoded?.name ||
-      lockLog.decoded?.event ||
-      "";
-
-    const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
+    const eventName = lockLog.name || lockLog.eventName || lockLog.decoded?.name || lockLog.decoded?.event || "";
+    const type = getLockType(eventName, isFuncLock);
 
     const lockerAddr = (lockLog.address || "").toLowerCase();
     const source = TEAM_FINANCE_CONTRACTS.has(lockerAddr) ? "Team Finance"
                   : UNCX_CONTRACTS.has(lockerAddr)        ? "UNCX"
                   : "Unknown";
 
-    const type =
-      eventName === "onNewLock"       ? "V2 Token" :
-      eventName === "onDeposit"       ? "V2 Token" :
-      eventName === "Deposit"         ? "V2 Token" :
-      eventName === "DepositNFT"      ? "NFT Lock" :
-      eventName === "onLock"          ? "V3 Token" :
-      eventName === "LiquidityLocked" ? "V4 Token" :
-      "Unknown";
+    const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
 
     const parts = [];
     parts.push("🔒 *New Lock Created*");
