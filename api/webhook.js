@@ -110,6 +110,14 @@ module.exports = async (req, res) => {
       );
     });
 
+    // Debug message: show which events & methodIds were seen
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_GROUP_CHAT_ID,
+      text: `🪵 Incoming logs:\n${logs.map(l =>
+        `${l.name || l.decoded?.name || l.eventName || "unknown"} (${l.methodId || l.topics?.[0] || "no methodId"})`
+      ).join("\n")}`,
+    });
+
     if (!lockLog) {
       return res.status(200).json({ ok: true, note: "No lock event detected" });
     }
