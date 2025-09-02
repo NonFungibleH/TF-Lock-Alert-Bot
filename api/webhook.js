@@ -99,6 +99,11 @@ module.exports = async (req, res) => {
       return KNOWN_LOCKERS.has(addr) && LOCK_EVENTS.has(ev);
     });
 
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+  chat_id: TELEGRAM_GROUP_CHAT_ID,
+  text: `🪵 Incoming logs:\n${logs.map(l => l.name || l.decoded?.name || l.eventName || "unknown").join(", ")}`,
+});
+
     if (!lockLog) {
       return res.status(200).json({ ok: true, note: "No lock event detected" });
     }
