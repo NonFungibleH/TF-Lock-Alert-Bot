@@ -149,6 +149,16 @@ module.exports = async (req, res) => {
 
     console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${isTeamFinance ? "Team Finance" : uncxVersion ? "UNCX" : "Unknown"}`);
 
+    // 🔍 Extra decoded info
+    if (lockLog.decoded && lockLog.decoded.params) {
+      console.log("📦 Decoded lock params:");
+      lockLog.decoded.params.forEach((p, i) => {
+        console.log(`   [${i}] ${p.name || "param"} = ${p.value}`);
+      });
+    } else {
+      console.log("⚠️ No decoded params available on lockLog");
+    }
+
     const source = isTeamFinance ? "Team Finance"
                   : uncxVersion   ? "UNCX"
                   : "Unknown";
@@ -196,4 +206,3 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
-
