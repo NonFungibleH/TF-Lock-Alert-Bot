@@ -1,5 +1,6 @@
 // api/webhook.js
 const axios = require("axios");
+const crypto = require("crypto");
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
@@ -81,9 +82,7 @@ module.exports = async (req, res) => {
     if (req.method !== "POST") return res.status(200).json({ ok: true });
     const body = req.body || {};
 
-    // 🔍 Dump full payload
     console.log("🚀 Full incoming body:", JSON.stringify(body, null, 2));
-
     if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
 
     const chainId = toDecChainId(body.chainId);
@@ -93,14 +92,14 @@ module.exports = async (req, res) => {
     const logs = Array.isArray(body.logs) ? body.logs : [];
     console.log("🪵 Logs array length:", logs.length);
 
-    // Build ABI event map for topic0 → eventName
+    // Build ABI event map for topic0 → {name, signature}
     const eventMap = {};
     if (Array.isArray(body.abi)) {
       body.abi.forEach(ev => {
         if (ev.type === "event") {
           const sig = `${ev.name}(${ev.inputs.map(i => i.type).join(",")})`;
-          const hash = require("crypto").createHash("keccak256" || "sha3-256").update(sig).digest("hex");
-          eventMap["0x" + hash] = ev.name;
+          const hash = "0x" + crypto.createHash("keccak256").update(sig).digest("hex");
+          eventMap[hash] = { name: ev.name, signature: sig };
         }
       });
     }
@@ -108,21 +107,27 @@ module.exports = async (req, res) => {
     let lockLog = null;
     for (let i = 0; i < logs.length; i++) {
       const l = logs[i];
-      console.log(`Log[${i}] =>`, JSON.stringify(l, null, 2));
-
       const addr = (l.address || "").toLowerCase();
+
       let ev =
         l.name ||
         l.eventName ||
         l.decoded?.name ||
         l.decoded?.event ||
-        eventMap[l.topic0] ||
-        "";
+        (eventMap[l.topic0] ? eventMap[l.topic0].name : "");
+
+      const sig = eventMap[l.topic0]?.signature || "N/A";
+
+      console.log(`Log[${i}]`);
+      console.log(`   ↳ addr=${addr}`);
+      console.log(`   ↳ topic0=${l.topic0}`);
+      console.log(`   ↳ resolvedEvent=${ev || "N/A"}`);
+      console.log(`   ↳ signature=${sig}`);
 
       const isKnown = KNOWN_LOCKERS.has(addr);
       const isLockEvent = LOCK_EVENTS.has(ev);
 
-      console.log(`🔎 Checking log: addr=${addr}, ev=${ev}, known=${isKnown}, lockEvent=${isLockEvent}`);
+      console.log(`🔎 Check: known=${isKnown}, lockEvent=${isLockEvent}`);
 
       if (isKnown && isLockEvent) {
         lockLog = { ...l, resolvedEvent: ev };
