@@ -87,7 +87,9 @@ module.exports = async (req, res) => {
     if (Array.isArray(body.logs)) {
       console.log("🪵 Logs array length:", body.logs.length);
       body.logs.forEach((l, i) => {
-        console.log(`Log[${i}] =>`, JSON.stringify(l, null, 2));
+        console.log(
+          `Log[${i}] addr=${l.address}, name=${l.name}, eventName=${l.eventName}, decodedName=${l.decoded?.name}, methodId=${l.methodId}`
+        );
       });
     } else {
       console.log("⚠️ No logs array found in body");
@@ -96,8 +98,9 @@ module.exports = async (req, res) => {
     if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
 
     const chainId = toDecChainId(body.chainId);
-    const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
+    console.log(`🌐 Parsed chainId: ${chainId}`);
 
+    const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
     const logs = Array.isArray(body.logs) ? body.logs : [];
 
     let lockLog = logs.find(l => {
@@ -108,25 +111,27 @@ module.exports = async (req, res) => {
         l.decoded?.name ||
         l.decoded?.event ||
         "";
-      return KNOWN_LOCKERS.has(addr) && LOCK_EVENTS.has(ev);
-    });
-
-    // Telegram quick debug of what was seen
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_GROUP_CHAT_ID,
-      text: `🪵 Incoming logs:\n${logs.map(l =>
-        `${l.name || l.decoded?.name || l.eventName || "unknown"} (methodId: ${l.methodId || "none"})`
-      ).join("\n")}`,
+      const isKnown = KNOWN_LOCKERS.has(addr);
+      const isLockEvent = LOCK_EVENTS.has(ev);
+      console.log(`🔎 Checking log: addr=${addr}, ev=${ev}, known=${isKnown}, lockEvent=${isLockEvent}`);
+      return isKnown && isLockEvent;
     });
 
     if (!lockLog) {
+      console.log("❌ No matching lock log found");
       return res.status(200).json({ ok: true, note: "No lock event detected" });
     }
 
     const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
-    if (!txHash) return res.status(200).json({ ok: true, note: "No txHash" });
+    if (!txHash) {
+      console.log("⚠️ No txHash found in payload");
+      return res.status(200).json({ ok: true, note: "No txHash" });
+    }
 
-    if (sentTxs.has(txHash)) return res.status(200).json({ ok: true, note: "Duplicate skipped" });
+    if (sentTxs.has(txHash)) {
+      console.log(`⏩ Duplicate txHash skipped: ${txHash}`);
+      return res.status(200).json({ ok: true, note: "Duplicate skipped" });
+    }
     sentTxs.add(txHash);
 
     const eventName =
@@ -141,6 +146,8 @@ module.exports = async (req, res) => {
 
     const isTeamFinance = TEAM_FINANCE_CONTRACTS.has(lockerAddr);
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
+
+    console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${isTeamFinance ? "Team Finance" : uncxVersion ? "UNCX" : "Unknown"}`);
 
     const source = isTeamFinance ? "Team Finance"
                   : uncxVersion   ? "UNCX"
@@ -181,9 +188,12 @@ module.exports = async (req, res) => {
       disable_web_page_preview: true,
     });
 
+    console.log("📤 Telegram message sent:", message);
+
     return res.status(200).json({ status: "sent" });
   } catch (err) {
     console.error("❌ Telegram webhook error:", err.response?.data || err.message);
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
+
