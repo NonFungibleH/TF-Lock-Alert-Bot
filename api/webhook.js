@@ -1,5 +1,6 @@
 // api/webhook.js
 const axios = require("axios");
+const { keccak256, toUtf8Bytes } = require("ethers").utils;
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
@@ -14,6 +15,18 @@ function toDecChainId(maybeHex) {
     return String(parseInt(maybeHex, 16));
   }
   return String(maybeHex);
+}
+
+function buildEventMap(abi) {
+  const map = {};
+  (abi || []).forEach(item => {
+    if (item.type === "event") {
+      const sig = `${item.name}(${item.inputs.map(i => i.type).join(",")})`;
+      const hash = keccak256(toUtf8Bytes(sig));
+      map[hash] = item.name;
+    }
+  });
+  return map;
 }
 
 const CHAINS = {
@@ -79,41 +92,30 @@ const LOCK_EVENTS = new Set([
 module.exports = async (req, res) => {
   try {
     if (req.method !== "POST") return res.status(200).json({ ok: true });
-
     const body = req.body || {};
 
     // 🔍 RAW DEBUG LOGGING
     console.log("🚀 Full incoming body:", JSON.stringify(body, null, 2));
-    if (Array.isArray(body.logs)) {
-      console.log("🪵 Logs array length:", body.logs.length);
-      body.logs.forEach((l, i) => {
-        console.log(
-          `Log[${i}] addr=${l.address}, name=${l.name}, eventName=${l.eventName}, decodedName=${l.decoded?.name}, methodId=${l.methodId}`
-        );
-      });
-    } else {
-      console.log("⚠️ No logs array found in body");
-    }
 
     if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
 
     const chainId = toDecChainId(body.chainId);
-    console.log(`🌐 Parsed chainId: ${chainId}`);
-
     const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
+    const eventMap = buildEventMap(body.abi || []);
     const logs = Array.isArray(body.logs) ? body.logs : [];
 
     let lockLog = logs.find(l => {
       const addr = (l.address || "").toLowerCase();
-      const ev =
-        l.name ||
-        l.eventName ||
-        l.decoded?.name ||
-        l.decoded?.event ||
-        "";
+      let ev = l.name || l.eventName || l.decoded?.name || l.decoded?.event || "";
+
+      // fallback to ABI eventMap
+      if (!ev && l.topic0) {
+        ev = eventMap[l.topic0] || "";
+      }
+
       const isKnown = KNOWN_LOCKERS.has(addr);
       const isLockEvent = LOCK_EVENTS.has(ev);
-      console.log(`🔎 Checking log: addr=${addr}, ev=${ev}, known=${isKnown}, lockEvent=${isLockEvent}`);
+      console.log(`🔎 Checking log: addr=${addr}, ev=${ev}, topic0=${l.topic0}, known=${isKnown}, lockEvent=${isLockEvent}`);
       return isKnown && isLockEvent;
     });
 
@@ -139,6 +141,7 @@ module.exports = async (req, res) => {
       lockLog.eventName ||
       lockLog.decoded?.name ||
       lockLog.decoded?.event ||
+      eventMap[lockLog.topic0] ||
       "";
 
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
@@ -146,22 +149,11 @@ module.exports = async (req, res) => {
 
     const isTeamFinance = TEAM_FINANCE_CONTRACTS.has(lockerAddr);
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
-
-    console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${isTeamFinance ? "Team Finance" : uncxVersion ? "UNCX" : "Unknown"}`);
-
-    // 🔍 Extra decoded info
-    if (lockLog.decoded && lockLog.decoded.params) {
-      console.log("📦 Decoded lock params:");
-      lockLog.decoded.params.forEach((p, i) => {
-        console.log(`   [${i}] ${p.name || "param"} = ${p.value}`);
-      });
-    } else {
-      console.log("⚠️ No decoded params available on lockLog");
-    }
-
     const source = isTeamFinance ? "Team Finance"
                   : uncxVersion   ? "UNCX"
                   : "Unknown";
+
+    console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${source}`);
 
     // Type mapping
     let type = "Unknown";
@@ -175,11 +167,7 @@ module.exports = async (req, res) => {
         eventName === "LiquidityLocked" ? "V4 Token" :
         "Unknown";
     } else if (uncxVersion) {
-      if (uncxVersion.includes("V2")) {
-        type = uncxVersion; // e.g. "Uniswap V2" or "SushiSwap V2"
-      } else {
-        type = `${uncxVersion} Token`; // e.g. "V3 Token", "V4 Token"
-      }
+      type = uncxVersion.includes("V2") ? uncxVersion : `${uncxVersion} Token`;
     }
 
     const parts = [];
@@ -199,7 +187,6 @@ module.exports = async (req, res) => {
     });
 
     console.log("📤 Telegram message sent:", message);
-
     return res.status(200).json({ status: "sent" });
   } catch (err) {
     console.error("❌ Telegram webhook error:", err.response?.data || err.message);
