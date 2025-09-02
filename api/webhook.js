@@ -1,6 +1,5 @@
 // api/webhook.js
 const axios = require("axios");
-const { keccak256, toUtf8Bytes } = require("ethers").utils;
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
@@ -17,18 +16,6 @@ function toDecChainId(maybeHex) {
   return String(maybeHex);
 }
 
-function buildEventMap(abi) {
-  const map = {};
-  (abi || []).forEach(item => {
-    if (item.type === "event") {
-      const sig = `${item.name}(${item.inputs.map(i => i.type).join(",")})`;
-      const hash = keccak256(toUtf8Bytes(sig));
-      map[hash] = item.name;
-    }
-  });
-  return map;
-}
-
 const CHAINS = {
   "1":    { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
   "56":   { name: "BNB Chain", explorer: "https://bscscan.com/tx/" },
@@ -37,7 +24,7 @@ const CHAINS = {
 };
 
 // -----------------------------------------
-// Known locker contracts (Team Finance + UNCX)
+// Known locker contracts
 // -----------------------------------------
 const TEAM_FINANCE_CONTRACTS = new Set([
   "0xe2fe530c047f2d85298b07d9333c05737f1435fb", // ETH V3
@@ -82,8 +69,8 @@ const LOCK_EVENTS = new Set([
   "onDeposit",
   "onLock",
   "LiquidityLocked",
-  "Deposit",      // Team Finance
-  "DepositNFT"    // Team Finance
+  "Deposit",
+  "DepositNFT"
 ]);
 
 // -----------------------------------------
@@ -94,30 +81,54 @@ module.exports = async (req, res) => {
     if (req.method !== "POST") return res.status(200).json({ ok: true });
     const body = req.body || {};
 
-    // 🔍 RAW DEBUG LOGGING
+    // 🔍 Dump full payload
     console.log("🚀 Full incoming body:", JSON.stringify(body, null, 2));
 
     if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
 
     const chainId = toDecChainId(body.chainId);
+    console.log(`🌐 Parsed chainId: ${chainId}`);
     const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
-    const eventMap = buildEventMap(body.abi || []);
+
     const logs = Array.isArray(body.logs) ? body.logs : [];
+    console.log("🪵 Logs array length:", logs.length);
 
-    let lockLog = logs.find(l => {
+    // Build ABI event map for topic0 → eventName
+    const eventMap = {};
+    if (Array.isArray(body.abi)) {
+      body.abi.forEach(ev => {
+        if (ev.type === "event") {
+          const sig = `${ev.name}(${ev.inputs.map(i => i.type).join(",")})`;
+          const hash = require("crypto").createHash("keccak256" || "sha3-256").update(sig).digest("hex");
+          eventMap["0x" + hash] = ev.name;
+        }
+      });
+    }
+
+    let lockLog = null;
+    for (let i = 0; i < logs.length; i++) {
+      const l = logs[i];
+      console.log(`Log[${i}] =>`, JSON.stringify(l, null, 2));
+
       const addr = (l.address || "").toLowerCase();
-      let ev = l.name || l.eventName || l.decoded?.name || l.decoded?.event || "";
-
-      // fallback to ABI eventMap
-      if (!ev && l.topic0) {
-        ev = eventMap[l.topic0] || "";
-      }
+      let ev =
+        l.name ||
+        l.eventName ||
+        l.decoded?.name ||
+        l.decoded?.event ||
+        eventMap[l.topic0] ||
+        "";
 
       const isKnown = KNOWN_LOCKERS.has(addr);
       const isLockEvent = LOCK_EVENTS.has(ev);
-      console.log(`🔎 Checking log: addr=${addr}, ev=${ev}, topic0=${l.topic0}, known=${isKnown}, lockEvent=${isLockEvent}`);
-      return isKnown && isLockEvent;
-    });
+
+      console.log(`🔎 Checking log: addr=${addr}, ev=${ev}, known=${isKnown}, lockEvent=${isLockEvent}`);
+
+      if (isKnown && isLockEvent) {
+        lockLog = { ...l, resolvedEvent: ev };
+        break;
+      }
+    }
 
     if (!lockLog) {
       console.log("❌ No matching lock log found");
@@ -129,38 +140,27 @@ module.exports = async (req, res) => {
       console.log("⚠️ No txHash found in payload");
       return res.status(200).json({ ok: true, note: "No txHash" });
     }
-
     if (sentTxs.has(txHash)) {
       console.log(`⏩ Duplicate txHash skipped: ${txHash}`);
       return res.status(200).json({ ok: true, note: "Duplicate skipped" });
     }
     sentTxs.add(txHash);
 
-    const eventName =
-      lockLog.name ||
-      lockLog.eventName ||
-      lockLog.decoded?.name ||
-      lockLog.decoded?.event ||
-      eventMap[lockLog.topic0] ||
-      "";
-
+    const eventName = lockLog.resolvedEvent || "Unknown";
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
     const lockerAddr = (lockLog.address || "").toLowerCase();
 
     const isTeamFinance = TEAM_FINANCE_CONTRACTS.has(lockerAddr);
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
+    console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${isTeamFinance ? "Team Finance" : uncxVersion ? "UNCX" : "Unknown"}`);
+
     const source = isTeamFinance ? "Team Finance"
                   : uncxVersion   ? "UNCX"
                   : "Unknown";
 
-    console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${source}`);
-
-    // Type mapping
     let type = "Unknown";
     if (isTeamFinance) {
       type =
-        eventName === "onNewLock"   ? "V2 Token" :
-        eventName === "onDeposit"   ? "V2 Token" :
         eventName === "Deposit"     ? "V2 Token" :
         eventName === "DepositNFT"  ? "V3 Token" :
         eventName === "onLock"      ? "V3 Token" :
@@ -170,13 +170,13 @@ module.exports = async (req, res) => {
       type = uncxVersion.includes("V2") ? uncxVersion : `${uncxVersion} Token`;
     }
 
-    const parts = [];
-    parts.push("🔒 *New Lock Created*");
-    parts.push(`🌐 Chain: ${chain.name}`);
-    parts.push(`📌 Type: ${type}`);
-    parts.push(`🔖 Source: ${source}`);
-    parts.push(`🔗 [View Tx](${explorerLink})`);
-
+    const parts = [
+      "🔒 *New Lock Created*",
+      `🌐 Chain: ${chain.name}`,
+      `📌 Type: ${type}`,
+      `🔖 Source: ${source}`,
+      `🔗 [View Tx](${explorerLink})`
+    ];
     const message = parts.join("\n");
 
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -188,6 +188,7 @@ module.exports = async (req, res) => {
 
     console.log("📤 Telegram message sent:", message);
     return res.status(200).json({ status: "sent" });
+
   } catch (err) {
     console.error("❌ Telegram webhook error:", err.response?.data || err.message);
     return res.status(200).json({ ok: true, error: err.message });
