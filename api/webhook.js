@@ -62,7 +62,7 @@ const KNOWN_LOCKERS = new Set([
 ]);
 
 // -----------------------------------------
-// Events & Methods
+// Events
 // -----------------------------------------
 const LOCK_EVENTS = new Set([
   "onNewLock",
@@ -73,13 +73,6 @@ const LOCK_EVENTS = new Set([
   "DepositNFT"    // Team Finance
 ]);
 
-const LOCK_METHODS = new Set([
-  "0xa35a96b8", // lock(tuple params)
-  "0x8af416f6", // lockLPToken
-  "0xeb35ed62", // lockLPToken(address,uint256,uint256,address,bool,address,uint16)
-  "0xf62f5a23", // lockNFTPosition
-]);
-
 // -----------------------------------------
 // Webhook
 // -----------------------------------------
@@ -88,6 +81,18 @@ module.exports = async (req, res) => {
     if (req.method !== "POST") return res.status(200).json({ ok: true });
 
     const body = req.body || {};
+
+    // 🔍 RAW DEBUG LOGGING
+    console.log("🚀 Full incoming body:", JSON.stringify(body, null, 2));
+    if (Array.isArray(body.logs)) {
+      console.log("🪵 Logs array length:", body.logs.length);
+      body.logs.forEach((l, i) => {
+        console.log(`Log[${i}] =>`, JSON.stringify(l, null, 2));
+      });
+    } else {
+      console.log("⚠️ No logs array found in body");
+    }
+
     if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
 
     const chainId = toDecChainId(body.chainId);
@@ -103,18 +108,14 @@ module.exports = async (req, res) => {
         l.decoded?.name ||
         l.decoded?.event ||
         "";
-      const method = (l.topics?.[0] || l.methodId || "").toLowerCase();
-
-      return KNOWN_LOCKERS.has(addr) && (
-        LOCK_EVENTS.has(ev) || LOCK_METHODS.has(method)
-      );
+      return KNOWN_LOCKERS.has(addr) && LOCK_EVENTS.has(ev);
     });
 
-    // Debug message: show which events & methodIds were seen
+    // Telegram quick debug of what was seen
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_GROUP_CHAT_ID,
       text: `🪵 Incoming logs:\n${logs.map(l =>
-        `${l.name || l.decoded?.name || l.eventName || "unknown"} (${l.methodId || l.topics?.[0] || "no methodId"})`
+        `${l.name || l.decoded?.name || l.eventName || "unknown"} (methodId: ${l.methodId || "none"})`
       ).join("\n")}`,
     });
 
