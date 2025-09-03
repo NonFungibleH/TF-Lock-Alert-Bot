@@ -76,7 +76,7 @@ module.exports = async (req, res) => {
     if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
     const chainId = toDecChainId(body.chainId);
     console.log(`🌐 Parsed chainId: ${chainId}`);
-    const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
+    const chain = CHAINS[chainId] || { name: chainId, explorer: "" });
     const logs = Array.isArray(body.logs) ? body.logs : [];
     console.log("🪵 Logs array length:", logs.length);
     // Build ABI event map for topic0 → {name, signature}
@@ -121,8 +121,8 @@ module.exports = async (req, res) => {
       }
     }
     if (!lockLog) {
-      console.log("❌ No matching lock log found");
-      return res.status(200).json({ ok: true, note: "No lock event detected" });
+      console.log("❌ No lock event detected, possible non-lock action (e.g., fee claim)");
+      return res.status(200).json({ ok: true, note: "No lock event detected, possible non-lock action" });
     }
     const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
     if (!txHash) {
