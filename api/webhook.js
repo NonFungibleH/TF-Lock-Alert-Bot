@@ -3,10 +3,10 @@ const { keccak256 } = require("js-sha3");
 const ethers = require("ethers");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
-// ----------------------------------------- 
+// -----------------------------------------
 // Helpers
 // -----------------------------------------
-const sentTxs = new Set();
+const sentTxs = new Set(); // In-memory Set; consider persistent storage for production
 function toDecChainId(maybeHex) {
   if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
     return String(parseInt(maybeHex, 16));
@@ -19,7 +19,7 @@ const CHAINS = {
   "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/" },
   "8453": { name: "Base", explorer: "https://basescan.org/tx/" },
 };
-// ----------------------------------------- 
+// -----------------------------------------
 // Known locker contracts
 // -----------------------------------------
 const TEAM_FINANCE_CONTRACTS = new Set([
@@ -51,7 +51,7 @@ const KNOWN_LOCKERS = new Set([
   ...TEAM_FINANCE_CONTRACTS,
   ...Object.keys(UNCX_CONTRACTS),
 ]);
-// ----------------------------------------- 
+// -----------------------------------------
 // Events
 // -----------------------------------------
 const LOCK_EVENTS = new Set([
@@ -66,7 +66,7 @@ const LOCK_EVENTS = new Set([
 const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCase();
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3"; // keccak256("TokenCreated(address,string,bytes32)");
 // -----------------------------------------
- // Webhook
+// Webhook
 // -----------------------------------------
 module.exports = async (req, res) => {
   try {
@@ -129,10 +129,12 @@ module.exports = async (req, res) => {
       console.log("⚠️ No txHash found in payload");
       return res.status(200).json({ ok: true, note: "No txHash" });
     }
+    // Check for duplicate before proceeding
     if (sentTxs.has(txHash)) {
       console.log(`⏩ Duplicate txHash skipped: ${txHash}`);
       return res.status(200).json({ ok: true, note: "Duplicate skipped" });
     }
+    // Proceed only if not a duplicate
     sentTxs.add(txHash);
     const eventName = lockLog.resolvedEvent || "Unknown";
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
