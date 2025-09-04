@@ -176,7 +176,7 @@ module.exports = async (req, res) => {
       type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
     }
     console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
-    console.log("📌 TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_TOKEN);
+    console.log("📌 TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_GROUP_CHAT_ID);
     if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
       console.log("❌ Missing Telegram credentials");
       return res.status(200).json({ ok: true, note: "Missing Telegram credentials" });
