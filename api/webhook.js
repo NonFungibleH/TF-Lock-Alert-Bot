@@ -47,10 +47,25 @@ const UNCX_CONTRACTS = {
   "0x40f6301edb774e8b22adc874f6cb17242baeb8c4": "V3",
   "0xadb2437e6f65682b85f814fbc12fec0508a7b1d0": "QuickSwap V2",
 };
+const GOPLUS_CONTRACTS = {
+  // Ethereum
+  "0xe7873eb8dda56ed49e51c87185ebcb93958e76f2": "V4",
+  "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
+  "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
+  // BSC
+  "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
+  "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
+  // Base
+  "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
+  "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
+  // Polygon
+  "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
+};
 const KNOWN_LOCKERS = new Set([
   ...TEAM_FINANCE_CONTRACTS,
   ...Object.keys(UNCX_CONTRACTS),
-]);
+  ...Object.keys(GOPLUS_CONTRACTS),
+].map(s => s.toLowerCase()));
 // -----------------------------------------
 // Events
 // -----------------------------------------
@@ -140,9 +155,11 @@ module.exports = async (req, res) => {
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
     const lockerAddr = (lockLog.address || "").toLowerCase();
     const isTeamFinance = TEAM_FINANCE_CONTRACTS.has(lockerAddr);
+    const isGoPlus = GOPLUS_CONTRACTS[lockerAddr];
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
-    console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${isTeamFinance ? "Team Finance" : uncxVersion ? "UNCX" : "Unknown"}`);
+    console.log(`✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${isTeamFinance ? "Team Finance" : isGoPlus ? "GoPlus" : uncxVersion ? "UNCX" : "Unknown"}`);
     const source = isTeamFinance ? (isAdshareSource ? "Team Finance (via Adshare)" : "Team Finance")
+                  : isGoPlus ? "GoPlus"
                   : uncxVersion ? "UNCX"
                   : "Unknown";
     let type = "Unknown";
@@ -155,9 +172,11 @@ module.exports = async (req, res) => {
         "Unknown";
     } else if (uncxVersion) {
       type = uncxVersion.includes("V2") ? uncxVersion : `${uncxVersion} Token`;
+    } else if (isGoPlus) {
+      type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
     }
     console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
-    console.log("📌 TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_GROUP_CHAT_ID);
+    console.log("📌 TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_TOKEN);
     if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
       console.log("❌ Missing Telegram credentials");
       return res.status(200).json({ ok: true, note: "Missing Telegram credentials" });
