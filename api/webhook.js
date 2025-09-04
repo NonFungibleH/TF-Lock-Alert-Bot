@@ -17,10 +17,10 @@ function toDecChainId(maybeHex) {
 }
 
 const CHAINS = {
-  "1": { name: "Ethereum", explorer: "https://etherscan.io/tx/", providerUrl: ETHEREUM_PROVIDER_URL, uniswapV2Factory: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f" },
-  "56": { name: "BNB Chain", explorer: "https://bscscan.com/tx/", providerUrl: process.env.BSC_PROVIDER_URL || "https://bsc-dataseed.binance.org/", uniswapV2Factory: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73" },
-  "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/", providerUrl: process.env.POLYGON_PROVIDER_URL || "https://polygon-rpc.com/", uniswapV2Factory: "0xc35DADB65012eC5796536bD9864eD8773aBc74C4" },
-  "8453": { name: "Base", explorer: "https://basescan.org/tx/", providerUrl: process.env.BASE_PROVIDER_URL || "https://mainnet.base.org", uniswapV2Factory: "0x33128a8fC178698f86b3E04aA20b7d7D32Eb7621" },
+  "1": { name: "Ethereum", explorer: "https://etherscan.io/tx/", providerUrl: ETHEREUM_PROVIDER_URL, uniswapV2Factory: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" },
+  "56": { name: "BNB Chain", explorer: "https://bscscan.com/tx/", providerUrl: process.env.BSC_PROVIDER_URL || "https://bsc-dataseed.binance.org/", uniswapV2Factory: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", positionManager: "0x7b8A6e4d6AB6b2f8Db165aC39Fb9B1f7E43C1A6F" },
+  "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/", providerUrl: process.env.POLYGON_PROVIDER_URL || "https://polygon-rpc.com/", uniswapV2Factory: "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" },
+  "8453": { name: "Base", explorer: "https://basescan.org/tx/", providerUrl: process.env.BASE_PROVIDER_URL || "https://mainnet.base.org", uniswapV2Factory: "0x33128a8fC178698f86b3E04aA20b7d7D32Eb7621", positionManager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1" },
 };
 
 // -----------------------------------------
@@ -94,7 +94,7 @@ const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e55242
 // -----------------------------------------
 async function fetchLockDetails(lockLog, chainId, eventMap) {
   try {
-    const chain = CHAINS[chainId] || { name: chainId, providerUrl: ETHEREUM_PROVIDER_URL };
+    const chain = CHAINS[chainId] || { name: chainId, providerUrl: ETHEREUM_PROVIDER_URL, uniswapV2Factory: ethers.constants.AddressZero, positionManager: ethers.constants.AddressZero };
     const provider = new ethers.providers.JsonRpcProvider(chain.providerUrl);
     const eventName = lockLog.resolvedEvent || "Unknown";
     const lockerAddr = (lockLog.address || "").toLowerCase();
@@ -111,28 +111,35 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
       : isGoPlus
       ? isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`
       : "Unknown";
+    console.log(`🔍 Lock details: event=${eventName}, type=${type}, source=${isTeamFinance ? "Team Finance" : isGoPlus ? "GoPlus" : uncxVersion ? "UNCX" : "Unknown"}`);
 
     // Decode event parameters
     let tokenAddress, amount, unlockTime, tokenId;
     const event = eventMap[lockLog.topic0];
     if (event && lockLog.data && lockLog.topics) {
-      const iface = new ethers.utils.Interface([event]);
-      const decoded = iface.parseLog({
-        topics: [lockLog.topic0, lockLog.topic1, lockLog.topic2, lockLog.topic3].filter(t => t),
-        data: lockLog.data
-      });
-      tokenAddress = decoded.args.tokenAddress;
-      amount = decoded.args.amount;
-      unlockTime = decoded.args.unlockTime;
-      tokenId = decoded.args.tokenId;
+      try {
+        const iface = new ethers.utils.Interface([event]);
+        const decoded = iface.parseLog({
+          topics: [lockLog.topic0, lockLog.topic1, lockLog.topic2, lockLog.topic3].filter(t => t),
+          data: lockLog.data
+        });
+        console.log(`🔎 Decoded event params:`, JSON.stringify(decoded.args, null, 2));
+        tokenAddress = decoded.args.lpToken || decoded.args.tokenAddress;
+        amount = decoded.args.amount;
+        unlockTime = decoded.args.unlockDate || decoded.args.unlockTime;
+        tokenId = decoded.args.tokenId;
+      } catch (decodeErr) {
+        console.error("❌ Failed to decode log:", decodeErr.message);
+        return { type, token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: ethers.constants.AddressZero };
+      }
     } else {
       console.log("⚠️ No event ABI or data for decoding");
-      return { type, token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: tokenAddress };
+      return { type, token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: ethers.constants.AddressZero };
     }
 
     if (!tokenAddress || !amount) {
       console.log("⚠️ Missing token or amount in event data");
-      return { type, token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: tokenAddress };
+      return { type, token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: tokenAddress || ethers.constants.AddressZero };
     }
 
     // Initialize token details
@@ -159,6 +166,7 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
         token1Contract.symbol().catch(() => "Unknown"),
         token1Contract.decimals().catch(() => 18)
       ]);
+      console.log(`🔍 V2 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}`);
       token0Symbol = token0SymbolRes;
       token1Symbol = token1SymbolRes;
       pairAddress = tokenAddress;
@@ -180,11 +188,7 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
     }
     // V3: Assume tokenId is provided for NFT-based locks
     else if (type.includes("V3")) {
-      const positionManagerAddr = chainId === "1" ? "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" :
-                               chainId === "56" ? "0x7b8A6e4d6AB6b2f8Db165aC39Fb9B1f7E43C1A6F" :
-                               chainId === "137" ? "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" :
-                               chainId === "8453" ? "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1" :
-                               ethers.constants.AddressZero;
+      const positionManagerAddr = chain.positionManager;
       if (tokenId && positionManagerAddr !== ethers.constants.AddressZero) {
         const positionContract = new ethers.Contract(positionManagerAddr, V3_POSITION_MANAGER_ABI, provider);
         const position = await positionContract.positions(tokenId).catch(() => null);
@@ -197,12 +201,12 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
             token1Contract.symbol().catch(() => "Unknown"),
             token1Contract.decimals().catch(() => 18)
           ]);
+          console.log(`🔍 V3 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}`);
           token0Symbol = token0SymbolRes;
           token1Symbol = token1SymbolRes;
-          // Simplified: Use liquidity as proxy for amounts
+          // Simplified: Use liquidity as proxy for amounts (real amounts need sqrtPriceX96)
           amount0 = ethers.utils.formatUnits(position.liquidity, token0Decimals);
           amount1 = ethers.utils.formatUnits(position.liquidity, token1Decimals);
-          // Fetch pair address for due diligence links
           const factoryContract = new ethers.Contract(chain.uniswapV2Factory, UNISWAP_V2_FACTORY_ABI, provider);
           pairAddress = await factoryContract.getPair(position.token0, position.token1).catch(() => tokenAddress);
           const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${pairAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
@@ -210,7 +214,11 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
             ? dexScreenerRes.data.pairs[0].priceUsd
             : (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
           usdValue = token1Price ? (parseFloat(amount1) * token1Price).toFixed(2) : "0";
+        } else {
+          console.log("⚠️ Failed to fetch V3 position for tokenId:", tokenId);
         }
+      } else {
+        console.log("⚠️ Missing tokenId or position manager for V3");
       }
     }
     // V4: Fallback to single token lock
@@ -220,6 +228,7 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
         tokenContract.symbol().catch(() => "Unknown"),
         tokenContract.decimals().catch(() => 18)
       ]);
+      console.log(`🔍 V4 token: ${symbol}`);
       token0Symbol = symbol;
       token1Symbol = "";
       amount0 = ethers.utils.formatUnits(amount, decimals);
@@ -233,7 +242,7 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
 
     return { type, token0Symbol, token1Symbol, amount0, amount1, usdValue, unlockDate, pairAddress };
   } catch (err) {
-    console.error("❌ Error fetching lock details:", err.message);
+    console.error("❌ Error fetching lock details:", err.message, err.stack);
     return { type: "Unknown", token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: ethers.constants.AddressZero };
   }
 }
@@ -263,7 +272,9 @@ module.exports = async (req, res) => {
           eventMap[hash] = { name: ev.name, signature: sig, inputs: ev.inputs };
         }
       });
-      console.log(`🗺️ Built eventMap with ${Object.keys(eventMap).length} entries`);
+      console.log(`🗺️ Built eventMap with ${Object.keys(eventMap).length} entries:`, Object.keys(eventMap));
+    } else {
+      console.log("⚠️ No ABI provided in payload");
     }
 
     let lockLog = null;
@@ -345,7 +356,7 @@ module.exports = async (req, res) => {
       `🔄 [DexScreener](https://dexscreener.com/${chainNameLower}/${pairAddress})`,
       `🔎 [DexTools](https://www.dextools.io/app/en/${chainNameLower}/pair-explorer/${pairAddress})`,
       `🚨 [Token Sniffer](https://tokensniffer.com/token/${chainId}/${pairAddress})`
-    ].filter(line => line);
+    ].filter(line => line && pairAddress !== ethers.constants.AddressZero);
     const message = parts.join("\n");
 
     if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
