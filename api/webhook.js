@@ -1,4 +1,3 @@
-```javascript
 const axios = require("axios");
 const { keccak256 } = require("js-sha3");
 const ethers = require("ethers");
@@ -120,6 +119,16 @@ const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCas
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3";
 
 // -----------------------------------------
+// Timeout Wrapper
+// -----------------------------------------
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Operation timed out")), ms))
+  ]);
+}
+
+// -----------------------------------------
 // Helper to Fetch Token and Lock Details
 // -----------------------------------------
 async function fetchLockDetails(lockLog, chainId, eventMap) {
@@ -182,60 +191,25 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
       ? new Date(Number(unlockTime) * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
       : "Unknown";
 
-    // V2: Assume tokenAddress is an LP pair
-    if (type.includes("V2")) {
-      const pairContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-      const [symbol, decimals, token0, token1, reserves] = await Promise.all([
-        pairContract.symbol().catch(() => "LP"),
-        pairContract.decimals().catch(() => 18),
-        pairContract.token0().catch(() => ethers.constants.AddressZero),
-        pairContract.token1().catch(() => ethers.constants.AddressZero),
-        pairContract.getReserves().catch(() => [0, 0, 0])
-      ]);
-      const token0Contract = new ethers.Contract(token0, ERC20_ABI, provider);
-      const token1Contract = new ethers.Contract(token1, ERC20_ABI, provider);
-      const [token0SymbolRes, token0Decimals, token1SymbolRes, token1Decimals] = await Promise.all([
-        token0Contract.symbol().catch(() => "Unknown"),
-        token0Contract.decimals().catch(() => 18),
-        token1Contract.symbol().catch(() => "Unknown"),
-        token1Contract.decimals().catch(() => 18)
-      ]);
-      console.log(`🔍 V2 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}`);
-      token0Symbol = token0SymbolRes;
-      token1Symbol = token1SymbolRes;
-      pairAddress = tokenAddress;
-      const totalSupply = await pairContract.totalSupply().catch(() => ethers.BigNumber.from("1"));
-      const share = ethers.BigNumber.from(amount).mul(ethers.utils.parseUnits("1", decimals)).div(totalSupply);
-      amount0 = ethers.utils.formatUnits(ethers.BigNumber.from(reserves[0]).mul(share).div(ethers.utils.parseUnits("1", decimals)), token0Decimals);
-      amount1 = ethers.utils.formatUnits(ethers.BigNumber.from(reserves[1]).mul(share).div(ethers.utils.parseUnits("1", decimals)), token1Decimals);
-
-      // Fetch USD value via DexScreener or CoinGecko
-      let token1Price = 0;
-      const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
-      if (dexScreenerRes.data.pairs.length > 0) {
-        token1Price = dexScreenerRes.data.pairs[0].priceUsd || 0;
-      } else {
-        const coinGeckoRes = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${token1Symbol.toLowerCase()}&vs_currencies=usd`, { timeout: 5000 }).catch(() => ({ data: {} }));
-        token1Price = coinGeckoRes.data[token1Symbol.toLowerCase()]?.usd || (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
-      }
-      usdValue = token1Price ? (parseFloat(amount1) * token1Price).toFixed(2) : "0";
-    }
     // V3: Assume tokenId is provided for NFT-based locks
-    else if (type.includes("V3")) {
+    if (type.includes("V3")) {
       const positionManagerAddr = chain.positionManager;
       if (tokenId && positionManagerAddr !== ethers.constants.AddressZero) {
         const positionContract = new ethers.Contract(positionManagerAddr, V3_POSITION_MANAGER_ABI, provider);
-        const position = await positionContract.positions(tokenId).catch(() => null);
+        const position = await withTimeout(positionContract.positions(tokenId), 5000).catch(err => {
+          console.error("❌ Failed to fetch V3 position for tokenId:", tokenId, err.message);
+          return null;
+        });
         if (position) {
           const token0Contract = new ethers.Contract(position.token0, ERC20_ABI, provider);
           const token1Contract = new ethers.Contract(position.token1, ERC20_ABI, provider);
           const [token0SymbolRes, token0Decimals, token1SymbolRes, token1Decimals] = await Promise.all([
-            token0Contract.symbol().catch(() => "Unknown"),
-            token0Contract.decimals().catch(() => 18),
-            token1Contract.symbol().catch(() => "Unknown"),
-            token1Contract.decimals().catch(() => 18)
+            withTimeout(token0Contract.symbol(), 3000).catch(() => "Unknown"),
+            withTimeout(token0Contract.decimals(), 3000).catch(() => 18),
+            withTimeout(token1Contract.symbol(), 3000).catch(() => "Unknown"),
+            withTimeout(token1Contract.decimals(), 3000).catch(() => 18)
           ]);
-          console.log(`🔍 V3 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}, tokenId=${tokenId}`);
+          console.log(`🔍 V3 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}, tokenId=${tokenId}, fee=${position.fee}`);
           token0Symbol = token0SymbolRes;
           token1Symbol = token1SymbolRes;
           // Simplified: Use liquidity as proxy for amounts
@@ -243,25 +217,40 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
           amount1 = ethers.utils.formatUnits(position.liquidity, token1Decimals);
           // Fetch pool address for due diligence links
           const factoryContract = new ethers.Contract(chain.uniswapV3Factory, UNISWAP_V3_FACTORY_ABI, provider);
-          pairAddress = await factoryContract.getPool(position.token0, position.token1, position.fee).catch(() => tokenAddress);
-          const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${pairAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+          pairAddress = await withTimeout(factoryContract.getPool(position.token0, position.token1, position.fee), 3000).catch(err => {
+            console.error("❌ Failed to fetch V3 pool:", err.message);
+            return tokenAddress;
+          });
+          const dexScreenerRes = await withTimeout(
+            axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${pairAddress}`, { timeout: 5000 }),
+            5000
+          ).catch(err => {
+            console.error("❌ DexScreener failed:", err.message);
+            return { data: { pairs: [] } };
+          });
           const token1Price = dexScreenerRes.data.pairs.length > 0
             ? dexScreenerRes.data.pairs[0].priceUsd
             : (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
           usdValue = token1Price ? (parseFloat(amount1) * token1Price).toFixed(2) : "0";
         } else {
-          console.log("⚠️ Failed to fetch V3 position for tokenId:", tokenId);
+          console.log("⚠️ V3 position fetch failed, falling back to single token");
           // Fallback to single token
           const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
           const [symbol, decimals] = await Promise.all([
-            tokenContract.symbol().catch(() => "Unknown"),
-            tokenContract.decimals().catch(() => 18)
+            withTimeout(tokenContract.symbol(), 3000).catch(() => "Unknown"),
+            withTimeout(tokenContract.decimals(), 3000).catch(() => 18)
           ]);
           token0Symbol = symbol;
           token1Symbol = "";
           amount0 = ethers.utils.formatUnits(amount, decimals);
           amount1 = "0";
-          const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+          const dexScreenerRes = await withTimeout(
+            axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }),
+            5000
+          ).catch(err => {
+            console.error("❌ DexScreener fallback failed:", err.message);
+            return { data: { pairs: [] } };
+          });
           const tokenPrice = dexScreenerRes.data.pairs.length > 0
             ? dexScreenerRes.data.pairs[0].priceUsd
             : (["USDT", "USDC", "DAI"].includes(symbol) ? 1 : 0);
@@ -272,33 +261,84 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
         // Fallback to single token
         const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
         const [symbol, decimals] = await Promise.all([
-          tokenContract.symbol().catch(() => "Unknown"),
-          tokenContract.decimals().catch(() => 18)
+          withTimeout(tokenContract.symbol(), 3000).catch(() => "Unknown"),
+          withTimeout(tokenContract.decimals(), 3000).catch(() => 18)
         ]);
         token0Symbol = symbol;
         token1Symbol = "";
         amount0 = ethers.utils.formatUnits(amount, decimals);
         amount1 = "0";
-        const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+        const dexScreenerRes = await withTimeout(
+          axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }),
+          5000
+        ).catch(err => {
+          console.error("❌ DexScreener fallback failed:", err.message);
+          return { data: { pairs: [] } };
+        });
         const tokenPrice = dexScreenerRes.data.pairs.length > 0
           ? dexScreenerRes.data.pairs[0].priceUsd
           : (["USDT", "USDC", "DAI"].includes(symbol) ? 1 : 0);
         usdValue = tokenPrice ? (parseFloat(amount0) * tokenPrice).toFixed(2) : "0";
       }
     }
+    // V2: Assume tokenAddress is an LP pair
+    else if (type.includes("V2")) {
+      const pairContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      const [symbol, decimals, token0, token1, reserves] = await Promise.all([
+        withTimeout(pairContract.symbol(), 3000).catch(() => "LP"),
+        withTimeout(pairContract.decimals(), 3000).catch(() => 18),
+        withTimeout(pairContract.token0(), 3000).catch(() => ethers.constants.AddressZero),
+        withTimeout(pairContract.token1(), 3000).catch(() => ethers.constants.AddressZero),
+        withTimeout(pairContract.getReserves(), 3000).catch(() => [0, 0, 0])
+      ]);
+      const token0Contract = new ethers.Contract(token0, ERC20_ABI, provider);
+      const token1Contract = new ethers.Contract(token1, ERC20_ABI, provider);
+      const [token0SymbolRes, token0Decimals, token1SymbolRes, token1Decimals] = await Promise.all([
+        withTimeout(token0Contract.symbol(), 3000).catch(() => "Unknown"),
+        withTimeout(token0Contract.decimals(), 3000).catch(() => 18),
+        withTimeout(token1Contract.symbol(), 3000).catch(() => "Unknown"),
+        withTimeout(token1Contract.decimals(), 3000).catch(() => 18)
+      ]);
+      console.log(`🔍 V2 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}`);
+      token0Symbol = token0SymbolRes;
+      token1Symbol = token1SymbolRes;
+      pairAddress = tokenAddress;
+      const totalSupply = await withTimeout(pairContract.totalSupply(), 3000).catch(() => ethers.BigNumber.from("1"));
+      const share = ethers.BigNumber.from(amount).mul(ethers.utils.parseUnits("1", decimals)).div(totalSupply);
+      amount0 = ethers.utils.formatUnits(ethers.BigNumber.from(reserves[0]).mul(share).div(ethers.utils.parseUnits("1", decimals)), token0Decimals);
+      amount1 = ethers.utils.formatUnits(ethers.BigNumber.from(reserves[1]).mul(share).div(ethers.utils.parseUnits("1", decimals)), token1Decimals);
+
+      const dexScreenerRes = await withTimeout(
+        axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${tokenAddress}`, { timeout: 5000 }),
+        5000
+      ).catch(err => {
+        console.error("❌ DexScreener failed:", err.message);
+        return { data: { pairs: [] } };
+      });
+      const token1Price = dexScreenerRes.data.pairs.length > 0
+        ? dexScreenerRes.data.pairs[0].priceUsd
+        : (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
+      usdValue = token1Price ? (parseFloat(amount1) * token1Price).toFixed(2) : "0";
+    }
     // V4: Fallback to single token lock
     else if (type.includes("V4")) {
       const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
       const [symbol, decimals] = await Promise.all([
-        tokenContract.symbol().catch(() => "Unknown"),
-        tokenContract.decimals().catch(() => 18)
+        withTimeout(tokenContract.symbol(), 3000).catch(() => "Unknown"),
+        withTimeout(tokenContract.decimals(), 3000).catch(() => 18)
       ]);
       console.log(`🔍 V4 token: ${symbol}`);
       token0Symbol = symbol;
       token1Symbol = "";
       amount0 = ethers.utils.formatUnits(amount, decimals);
       amount1 = "0";
-      const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+      const dexScreenerRes = await withTimeout(
+        axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }),
+        5000
+      ).catch(err => {
+        console.error("❌ DexScreener failed:", err.message);
+        return { data: { pairs: [] } };
+      });
       const tokenPrice = dexScreenerRes.data.pairs.length > 0
         ? dexScreenerRes.data.pairs[0].priceUsd
         : (["USDT", "USDC", "DAI"].includes(symbol) ? 1 : 0);
@@ -316,13 +356,23 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
 // Webhook
 // -----------------------------------------
 module.exports = async (req, res) => {
+  console.log("🚀 Webhook invoked at", new Date().toISOString());
   try {
+    // Check environment variables
+    if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
+      console.error("❌ Missing Telegram credentials: TELEGRAM_TOKEN or TELEGRAM_GROUP_CHAT_ID");
+      return res.status(200).json({ ok: true, note: "Missing Telegram credentials" });
+    }
+    if (!BASE_PROVIDER_URL || BASE_PROVIDER_URL === "https://mainnet.base.org") {
+      console.warn("⚠️ Using default BASE_PROVIDER_URL, may be unreliable");
+    }
+
     if (req.method !== "POST") {
       console.log("ℹ️ Non-POST request received, ignoring");
       return res.status(200).json({ ok: true });
     }
     const body = req.body || {};
-    console.log("🚀 Full incoming body:", JSON.stringify(body, null, 2));
+    console.log("📥 Full incoming body:", JSON.stringify(body, null, 2));
     if (!body.chainId) {
       console.log("ℹ️ Validation ping received");
       return res.status(200).json({ ok: true, note: "Validation ping" });
@@ -431,17 +481,15 @@ module.exports = async (req, res) => {
     ].filter(line => line && pairAddress !== ethers.constants.AddressZero);
     const message = parts.join("\n");
 
-    if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
-      console.log("❌ Missing Telegram credentials");
-      return res.status(200).json({ ok: true, note: "Missing Telegram credentials" });
-    }
-
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_GROUP_CHAT_ID,
-      text: message,
-      parse_mode: "Markdown",
-      disable_web_page_preview: true,
-    });
+    await withTimeout(
+      axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+        chat_id: TELEGRAM_GROUP_CHAT_ID,
+        text: message,
+        parse_mode: "Markdown",
+        disable_web_page_preview: true,
+      }),
+      5000
+    );
     console.log("📤 Telegram message sent:", message);
     return res.status(200).json({ status: "sent" });
   } catch (err) {
@@ -449,4 +497,3 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
-```
