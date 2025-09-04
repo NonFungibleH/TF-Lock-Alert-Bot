@@ -3,12 +3,12 @@ const { keccak256 } = require("js-sha3");
 const ethers = require("ethers");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
-const ETHEREUM_PROVIDER_URL = process.env.ETHEREUM_PROVIDER_URL || "https://mainnet.infura.io/v3/YOUR_INFURA_KEY"; // Set in env
+const ETHEREUM_PROVIDER_URL = process.env.ETHEREUM_PROVIDER_URL || "https://mainnet.infura.io/v3/YOUR_INFURA_KEY";
 
 // -----------------------------------------
 // Helpers
 // -----------------------------------------
-const sentTxs = new Set(); // In-memory Set; consider persistent storage for production
+const sentTxs = new Set();
 function toDecChainId(maybeHex) {
   if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
     return String(parseInt(maybeHex, 16));
@@ -17,10 +17,10 @@ function toDecChainId(maybeHex) {
 }
 
 const CHAINS = {
-  "1": { name: "Ethereum", explorer: "https://etherscan.io/tx/", providerUrl: ETHEREUM_PROVIDER_URL },
-  "56": { name: "BNB Chain", explorer: "https://bscscan.com/tx/", providerUrl: process.env.BSC_PROVIDER_URL || "https://bsc-dataseed.binance.org/" },
-  "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/", providerUrl: process.env.POLYGON_PROVIDER_URL || "https://polygon-rpc.com/" },
-  "8453": { name: "Base", explorer: "https://basescan.org/tx/", providerUrl: process.env.BASE_PROVIDER_URL || "https://mainnet.base.org" },
+  "1": { name: "Ethereum", explorer: "https://etherscan.io/tx/", providerUrl: ETHEREUM_PROVIDER_URL, uniswapV2Factory: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f" },
+  "56": { name: "BNB Chain", explorer: "https://bscscan.com/tx/", providerUrl: process.env.BSC_PROVIDER_URL || "https://bsc-dataseed.binance.org/", uniswapV2Factory: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73" },
+  "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/", providerUrl: process.env.POLYGON_PROVIDER_URL || "https://polygon-rpc.com/", uniswapV2Factory: "0xc35DADB65012eC5796536bD9864eD8773aBc74C4" },
+  "8453": { name: "Base", explorer: "https://basescan.org/tx/", providerUrl: process.env.BASE_PROVIDER_URL || "https://mainnet.base.org", uniswapV2Factory: "0x33128a8fC178698f86b3E04aA20b7d7D32Eb7621" },
 };
 
 // -----------------------------------------
@@ -36,15 +36,18 @@ const ERC20_ABI = [
 const V3_POSITION_MANAGER_ABI = [
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)"
 ];
+const UNISWAP_V2_FACTORY_ABI = [
+  "function getPair(address tokenA, address tokenB) view returns (address pair)"
+];
 
 // -----------------------------------------
 // Known locker contracts
 // -----------------------------------------
 const TEAM_FINANCE_CONTRACTS = new Set([
-  "0xe2fe530c047f2d85298b07d9333c05737f1435fb", // ETH V3
-  "0x0c89c0407775dd89b12918b9c0aa42bf96518820", // BSC V3
-  "0x4f0fd563be89ec8c3e7d595bf3639128c0a7c33a", // BASE V3
-  "0x3ef7442df454ba6b7c1deec8ddf29cfb2d6e56c7", // Polygon V3
+  "0xe2fe530c047f2d85298b07d9333c05737f1435fb",
+  "0x0c89c0407775dd89b12918b9c0aa42bf96518820",
+  "0x4f0fd563be89ec8c3e7d595bf3639128c0a7c33a",
+  "0x3ef7442df454ba6b7c1deec8ddf29cfb2d6e56c7",
 ].map(s => s.toLowerCase()));
 const UNCX_CONTRACTS = {
   "0x30529ac67d5ac5f33a4e7fe533149a567451f023": "V4",
@@ -65,11 +68,6 @@ const GOPLUS_CONTRACTS = {
   "0xe7873eb8dda56ed49e51c87185ebcb93958e76f2": "V4",
   "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
   "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
-  "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
-  "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
-  "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
-  "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
-  "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
 };
 const KNOWN_LOCKERS = new Set([
   ...TEAM_FINANCE_CONTRACTS,
@@ -129,16 +127,16 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
       tokenId = decoded.args.tokenId;
     } else {
       console.log("⚠️ No event ABI or data for decoding");
-      return { type, token0Symbol: "Unknown", token1Symbol: "Unknown", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown" };
+      return { type, token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: tokenAddress };
     }
 
     if (!tokenAddress || !amount) {
       console.log("⚠️ Missing token or amount in event data");
-      return { type, token0Symbol: "Unknown", token1Symbol: "Unknown", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown" };
+      return { type, token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: tokenAddress };
     }
 
     // Initialize token details
-    let token0Symbol = "Unknown", token1Symbol = "Unknown", amount0 = "0", amount1 = "0", usdValue = "0";
+    let token0Symbol = "Unknown", token1Symbol = "", amount0 = "0", amount1 = "0", usdValue = "0", pairAddress = tokenAddress;
     let unlockDate = unlockTime
       ? new Date(Number(unlockTime) * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
       : "Unknown";
@@ -163,22 +161,29 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
       ]);
       token0Symbol = token0SymbolRes;
       token1Symbol = token1SymbolRes;
+      pairAddress = tokenAddress;
       const totalSupply = await pairContract.totalSupply().catch(() => ethers.BigNumber.from("1"));
       const share = ethers.BigNumber.from(amount).mul(ethers.utils.parseUnits("1", decimals)).div(totalSupply);
       amount0 = ethers.utils.formatUnits(ethers.BigNumber.from(reserves[0]).mul(share).div(ethers.utils.parseUnits("1", decimals)), token0Decimals);
       amount1 = ethers.utils.formatUnits(ethers.BigNumber.from(reserves[1]).mul(share).div(ethers.utils.parseUnits("1", decimals)), token1Decimals);
 
-      // Fetch USD value via CoinGecko (assume token1 is priced, e.g., WETH or stablecoin)
-      const priceRes = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${token1Symbol.toLowerCase()}&vs_currencies=usd`, { timeout: 5000 }).catch(() => ({ data: {} }));
-      const token1Price = priceRes.data[token1Symbol.toLowerCase()]?.usd || (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
+      // Fetch USD value via DexScreener or CoinGecko
+      let token1Price = 0;
+      const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+      if (dexScreenerRes.data.pairs.length > 0) {
+        token1Price = dexScreenerRes.data.pairs[0].priceUsd || 0;
+      } else {
+        const coinGeckoRes = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${token1Symbol.toLowerCase()}&vs_currencies=usd`, { timeout: 5000 }).catch(() => ({ data: {} }));
+        token1Price = coinGeckoRes.data[token1Symbol.toLowerCase()]?.usd || (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
+      }
       usdValue = token1Price ? (parseFloat(amount1) * token1Price).toFixed(2) : "0";
     }
     // V3: Assume tokenId is provided for NFT-based locks
     else if (type.includes("V3")) {
-      const positionManagerAddr = chainId === "1" ? "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" : // Ethereum
-                               chainId === "56" ? "0x7b8A6e4d6AB6b2f8Db165aC39Fb9B1f7E43C1A6F" : // BSC
-                               chainId === "137" ? "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" : // Polygon
-                               chainId === "8453" ? "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1" : // Base
+      const positionManagerAddr = chainId === "1" ? "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" :
+                               chainId === "56" ? "0x7b8A6e4d6AB6b2f8Db165aC39Fb9B1f7E43C1A6F" :
+                               chainId === "137" ? "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" :
+                               chainId === "8453" ? "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1" :
                                ethers.constants.AddressZero;
       if (tokenId && positionManagerAddr !== ethers.constants.AddressZero) {
         const positionContract = new ethers.Contract(positionManagerAddr, V3_POSITION_MANAGER_ABI, provider);
@@ -194,16 +199,21 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
           ]);
           token0Symbol = token0SymbolRes;
           token1Symbol = token1SymbolRes;
-          // Simplified: Use liquidity as proxy for amounts (real amounts need sqrtPriceX96)
+          // Simplified: Use liquidity as proxy for amounts
           amount0 = ethers.utils.formatUnits(position.liquidity, token0Decimals);
           amount1 = ethers.utils.formatUnits(position.liquidity, token1Decimals);
-          const priceRes = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${token1Symbol.toLowerCase()}&vs_currencies=usd`, { timeout: 5000 }).catch(() => ({ data: {} }));
-          const token1Price = priceRes.data[token1Symbol.toLowerCase()]?.usd || (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
+          // Fetch pair address for due diligence links
+          const factoryContract = new ethers.Contract(chain.uniswapV2Factory, UNISWAP_V2_FACTORY_ABI, provider);
+          pairAddress = await factoryContract.getPair(position.token0, position.token1).catch(() => tokenAddress);
+          const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${pairAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+          const token1Price = dexScreenerRes.data.pairs.length > 0
+            ? dexScreenerRes.data.pairs[0].priceUsd
+            : (["USDT", "USDC", "DAI"].includes(token1Symbol) ? 1 : 0);
           usdValue = token1Price ? (parseFloat(amount1) * token1Price).toFixed(2) : "0";
         }
       }
     }
-    // V4: Fallback to single token lock (pending specific ABI)
+    // V4: Fallback to single token lock
     else if (type.includes("V4")) {
       const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
       const [symbol, decimals] = await Promise.all([
@@ -214,15 +224,17 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
       token1Symbol = "";
       amount0 = ethers.utils.formatUnits(amount, decimals);
       amount1 = "0";
-      const priceRes = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${symbol.toLowerCase()}&vs_currencies=usd`, { timeout: 5000 }).catch(() => ({ data: {} }));
-      const tokenPrice = priceRes.data[symbol.toLowerCase()]?.usd || (["USDT", "USDC", "DAI"].includes(symbol) ? 1 : 0);
+      const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+      const tokenPrice = dexScreenerRes.data.pairs.length > 0
+        ? dexScreenerRes.data.pairs[0].priceUsd
+        : (["USDT", "USDC", "DAI"].includes(symbol) ? 1 : 0);
       usdValue = tokenPrice ? (parseFloat(amount0) * tokenPrice).toFixed(2) : "0";
     }
 
-    return { type, token0Symbol, token1Symbol, amount0, amount1, usdValue, unlockDate };
+    return { type, token0Symbol, token1Symbol, amount0, amount1, usdValue, unlockDate, pairAddress };
   } catch (err) {
     console.error("❌ Error fetching lock details:", err.message);
-    return { type: "Unknown", token0Symbol: "Unknown", token1Symbol: "Unknown", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown" };
+    return { type: "Unknown", token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: ethers.constants.AddressZero };
   }
 }
 
@@ -310,11 +322,12 @@ module.exports = async (req, res) => {
                   : "Unknown";
 
     // Fetch lock details
-    const { type, token0Symbol, token1Symbol, amount0, amount1, usdValue, unlockDate } = await fetchLockDetails(lockLog, chainId, eventMap);
+    const { type, token0Symbol, token1Symbol, amount0, amount1, usdValue, unlockDate, pairAddress } = await fetchLockDetails(lockLog, chainId, eventMap);
 
     // Build Telegram message
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
     const pairSymbol = token1Symbol ? `${token0Symbol}/${token1Symbol}` : token0Symbol;
+    const chainNameLower = chain.name.toLowerCase().replace(" ", "");
     const parts = [
       "🔒 *New LP Lock Detected ✨*",
       "*Locked*",
@@ -329,10 +342,10 @@ module.exports = async (req, res) => {
       `🔖 Source: ${source}`,
       `🔗 [View Tx](${explorerLink})`,
       "*Due Diligence*",
-      `🔄 [DexScreener](https://dexscreener.com/${chainId}/${tokenAddress})`,
-      `🔎 [DexTools](https://www.dextools.io/app/en/pair-explorer/${tokenAddress})`,
-      `🚨 [Token Sniffer](https://tokensniffer.com/token/${chainId}/${tokenAddress})`
-    ].filter(line => line); // Remove empty lines
+      `🔄 [DexScreener](https://dexscreener.com/${chainNameLower}/${pairAddress})`,
+      `🔎 [DexTools](https://www.dextools.io/app/en/${chainNameLower}/pair-explorer/${pairAddress})`,
+      `🚨 [Token Sniffer](https://tokensniffer.com/token/${chainId}/${pairAddress})`
+    ].filter(line => line);
     const message = parts.join("\n");
 
     if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
@@ -348,3 +361,8 @@ module.exports = async (req, res) => {
     });
     console.log("📤 Telegram message sent:", message);
     return res.status(200).json({ status: "sent" });
+  } catch (err) {
+    console.error("❌ Telegram webhook error:", err.message, err.stack);
+    return res.status(200).json({ ok: true, error: err.message });
+  }
+};
