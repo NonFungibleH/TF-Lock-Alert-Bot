@@ -1,9 +1,11 @@
+```javascript
 const axios = require("axios");
 const { keccak256 } = require("js-sha3");
 const ethers = require("ethers");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const ETHEREUM_PROVIDER_URL = process.env.ETHEREUM_PROVIDER_URL || "https://mainnet.infura.io/v3/YOUR_INFURA_KEY";
+const BASE_PROVIDER_URL = process.env.BASE_PROVIDER_URL || "https://mainnet.base.org";
 
 // -----------------------------------------
 // Helpers
@@ -17,10 +19,38 @@ function toDecChainId(maybeHex) {
 }
 
 const CHAINS = {
-  "1": { name: "Ethereum", explorer: "https://etherscan.io/tx/", providerUrl: ETHEREUM_PROVIDER_URL, uniswapV2Factory: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" },
-  "56": { name: "BNB Chain", explorer: "https://bscscan.com/tx/", providerUrl: process.env.BSC_PROVIDER_URL || "https://bsc-dataseed.binance.org/", uniswapV2Factory: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", positionManager: "0x7b8A6e4d6AB6b2f8Db165aC39Fb9B1f7E43C1A6F" },
-  "137": { name: "Polygon", explorer: "https://polygonscan.com/tx/", providerUrl: process.env.POLYGON_PROVIDER_URL || "https://polygon-rpc.com/", uniswapV2Factory: "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88" },
-  "8453": { name: "Base", explorer: "https://basescan.org/tx/", providerUrl: process.env.BASE_PROVIDER_URL || "https://mainnet.base.org", uniswapV2Factory: "0x33128a8fC178698f86b3E04aA20b7d7D32Eb7621", positionManager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1" },
+  "1": {
+    name: "Ethereum",
+    explorer: "https://etherscan.io/tx/",
+    providerUrl: ETHEREUM_PROVIDER_URL,
+    uniswapV2Factory: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
+    uniswapV3Factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+  },
+  "56": {
+    name: "BNB Chain",
+    explorer: "https://bscscan.com/tx/",
+    providerUrl: process.env.BSC_PROVIDER_URL || "https://bsc-dataseed.binance.org/",
+    uniswapV2Factory: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+    uniswapV3Factory: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7",
+    positionManager: "0x7b8A6e4d6AB6b2f8Db165aC39Fb9B1f7E43C1A6F"
+  },
+  "137": {
+    name: "Polygon",
+    explorer: "https://polygonscan.com/tx/",
+    providerUrl: process.env.POLYGON_PROVIDER_URL || "https://polygon-rpc.com/",
+    uniswapV2Factory: "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+    uniswapV3Factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+  },
+  "8453": {
+    name: "Base",
+    explorer: "https://basescan.org/tx/",
+    providerUrl: BASE_PROVIDER_URL,
+    uniswapV2Factory: "0x33128a8fC178698f86b3E04aA20b7d7D32Eb7621",
+    uniswapV3Factory: "0x33128a8fC178698f86b3E04aA20b7d7D32Eb7621",
+    positionManager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"
+  },
 };
 
 // -----------------------------------------
@@ -36,8 +66,8 @@ const ERC20_ABI = [
 const V3_POSITION_MANAGER_ABI = [
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)"
 ];
-const UNISWAP_V2_FACTORY_ABI = [
-  "function getPair(address tokenA, address tokenB) view returns (address pair)"
+const UNISWAP_V3_FACTORY_ABI = [
+  "function getPool(address tokenA, address tokenB, uint24 fee) view returns (address pool)"
 ];
 
 // -----------------------------------------
@@ -94,7 +124,11 @@ const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e55242
 // -----------------------------------------
 async function fetchLockDetails(lockLog, chainId, eventMap) {
   try {
-    const chain = CHAINS[chainId] || { name: chainId, providerUrl: ETHEREUM_PROVIDER_URL, uniswapV2Factory: ethers.constants.AddressZero, positionManager: ethers.constants.AddressZero };
+    const chain = CHAINS[chainId] || { name: chainId, providerUrl: BASE_PROVIDER_URL, uniswapV3Factory: ethers.constants.AddressZero, positionManager: ethers.constants.AddressZero };
+    if (!chain.providerUrl) {
+      console.error("❌ No provider URL for chain:", chainId);
+      return { type: "Unknown", token0Symbol: "Unknown", token1Symbol: "", amount0: "0", amount1: "0", usdValue: "0", unlockDate: "Unknown", pairAddress: ethers.constants.AddressZero };
+    }
     const provider = new ethers.providers.JsonRpcProvider(chain.providerUrl);
     const eventName = lockLog.resolvedEvent || "Unknown";
     const lockerAddr = (lockLog.address || "").toLowerCase();
@@ -201,14 +235,15 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
             token1Contract.symbol().catch(() => "Unknown"),
             token1Contract.decimals().catch(() => 18)
           ]);
-          console.log(`🔍 V3 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}`);
+          console.log(`🔍 V3 tokens: token0=${token0SymbolRes}, token1=${token1SymbolRes}, tokenId=${tokenId}`);
           token0Symbol = token0SymbolRes;
           token1Symbol = token1SymbolRes;
-          // Simplified: Use liquidity as proxy for amounts (real amounts need sqrtPriceX96)
+          // Simplified: Use liquidity as proxy for amounts
           amount0 = ethers.utils.formatUnits(position.liquidity, token0Decimals);
           amount1 = ethers.utils.formatUnits(position.liquidity, token1Decimals);
-          const factoryContract = new ethers.Contract(chain.uniswapV2Factory, UNISWAP_V2_FACTORY_ABI, provider);
-          pairAddress = await factoryContract.getPair(position.token0, position.token1).catch(() => tokenAddress);
+          // Fetch pool address for due diligence links
+          const factoryContract = new ethers.Contract(chain.uniswapV3Factory, UNISWAP_V3_FACTORY_ABI, provider);
+          pairAddress = await factoryContract.getPool(position.token0, position.token1, position.fee).catch(() => tokenAddress);
           const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/${chainId}/${pairAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
           const token1Price = dexScreenerRes.data.pairs.length > 0
             ? dexScreenerRes.data.pairs[0].priceUsd
@@ -216,9 +251,39 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
           usdValue = token1Price ? (parseFloat(amount1) * token1Price).toFixed(2) : "0";
         } else {
           console.log("⚠️ Failed to fetch V3 position for tokenId:", tokenId);
+          // Fallback to single token
+          const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+          const [symbol, decimals] = await Promise.all([
+            tokenContract.symbol().catch(() => "Unknown"),
+            tokenContract.decimals().catch(() => 18)
+          ]);
+          token0Symbol = symbol;
+          token1Symbol = "";
+          amount0 = ethers.utils.formatUnits(amount, decimals);
+          amount1 = "0";
+          const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+          const tokenPrice = dexScreenerRes.data.pairs.length > 0
+            ? dexScreenerRes.data.pairs[0].priceUsd
+            : (["USDT", "USDC", "DAI"].includes(symbol) ? 1 : 0);
+          usdValue = tokenPrice ? (parseFloat(amount0) * tokenPrice).toFixed(2) : "0";
         }
       } else {
         console.log("⚠️ Missing tokenId or position manager for V3");
+        // Fallback to single token
+        const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+        const [symbol, decimals] = await Promise.all([
+          tokenContract.symbol().catch(() => "Unknown"),
+          tokenContract.decimals().catch(() => 18)
+        ]);
+        token0Symbol = symbol;
+        token1Symbol = "";
+        amount0 = ethers.utils.formatUnits(amount, decimals);
+        amount1 = "0";
+        const dexScreenerRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 5000 }).catch(() => ({ data: { pairs: [] } }));
+        const tokenPrice = dexScreenerRes.data.pairs.length > 0
+          ? dexScreenerRes.data.pairs[0].priceUsd
+          : (["USDT", "USDC", "DAI"].includes(symbol) ? 1 : 0);
+        usdValue = tokenPrice ? (parseFloat(amount0) * tokenPrice).toFixed(2) : "0";
       }
     }
     // V4: Fallback to single token lock
@@ -252,10 +317,16 @@ async function fetchLockDetails(lockLog, chainId, eventMap) {
 // -----------------------------------------
 module.exports = async (req, res) => {
   try {
-    if (req.method !== "POST") return res.status(200).json({ ok: true });
+    if (req.method !== "POST") {
+      console.log("ℹ️ Non-POST request received, ignoring");
+      return res.status(200).json({ ok: true });
+    }
     const body = req.body || {};
     console.log("🚀 Full incoming body:", JSON.stringify(body, null, 2));
-    if (!body.chainId) return res.status(200).json({ ok: true, note: "Validation ping" });
+    if (!body.chainId) {
+      console.log("ℹ️ Validation ping received");
+      return res.status(200).json({ ok: true, note: "Validation ping" });
+    }
     const chainId = toDecChainId(body.chainId);
     console.log(`🌐 Parsed chainId: ${chainId}`);
     const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
@@ -299,6 +370,7 @@ module.exports = async (req, res) => {
       console.log(`🔎 Check: known=${isKnown}, lockEvent=${isLockEvent}`);
       if (isKnown && isLockEvent) {
         lockLog = { ...l, resolvedEvent: ev };
+        console.log(`✅ Matched lockLog: ${ev} from ${addr}`);
       }
       if (addr === ADS_FUND_FACTORY && l.topic0 === TOKEN_CREATED_TOPIC) {
         isAdshareSource = true;
@@ -377,3 +449,4 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
+```
