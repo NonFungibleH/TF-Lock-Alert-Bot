@@ -1,4 +1,4 @@
-const axios = require("axios"); 
+const axios = require("axios");
 const { keccak256 } = require("js-sha3");
 const ethers = require("ethers");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -77,6 +77,12 @@ const LOCK_EVENTS = new Set([
   "Deposit",
   "DepositNFT"
 ]);
+
+const EVENT_TOPICS = {
+  "0x3bf9c85fbe37d401523942f10940796acef64062e1a1c45647978e32f4969f5c": "onLock",
+  "0x69963d4b9cdadfa6aee5e588b147db4212209aa72fd9b3c7f655e20cd7efa762": "DepositNFT",
+  // Add more known topic0 to event name mappings as needed
+};
 // Additional known factory for unique property
 const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCase();
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3"; // keccak256("TokenCreated(address,string,bytes32)");
@@ -117,6 +123,11 @@ module.exports = async (req, res) => {
         l.decoded?.name ||
         l.decoded?.event ||
         (eventMap[l.topic0] ? eventMap[l.topic0].name : "");
+      // Resolve from known topics if not found
+      if (!ev && EVENT_TOPICS[l.topic0]) {
+        ev = EVENT_TOPICS[l.topic0];
+        console.log(`Resolved ev from known topic0: ${ev}`);
+      }
       const sig = eventMap[l.topic0]?.signature || "N/A";
       console.log(`Log[${i}]`);
       console.log(` ↳ addr=${addr}`);
