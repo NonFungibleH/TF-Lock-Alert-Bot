@@ -2,6 +2,9 @@ const axios = require("axios");
 const { keccak256 } = require("js-sha3");
 const ethers = require("ethers");
 
+// 👇 Import Hunt3r.exe Twitter lock poster
+const { maybePostLock } = require("../twitter/lockPoster");
+
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION; // 👈 new env var
@@ -92,9 +95,8 @@ const EVENT_TOPICS = {
   "0x69963d4b9cdadfa6aee5e588b147db4212209aa72fd9b3c7f655e20cd7efa762": "DepositNFT",
 };
 
-// Additional known factory for unique property
 const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCase();
-const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3"; // keccak256("TokenCreated(address,string,bytes32)");
+const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3";
 
 // -----------------------------------------
 // Webhook
@@ -240,10 +242,10 @@ module.exports = async (req, res) => {
     ];
     const message = parts.join("\n");
 
-    // 👇 added message_thread_id here
+    // Send to Telegram
     await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: TELEGRAM_GROUP_CHAT_ID,
-      message_thread_id: TELEGRAM_TOPIC_DISCUSSION, 
+      message_thread_id: TELEGRAM_TOPIC_DISCUSSION,
       text: message,
       parse_mode: "Markdown",
       disable_web_page_preview: true,
@@ -251,9 +253,13 @@ module.exports = async (req, res) => {
 
     console.log("📤 Telegram message sent:", message);
 
+    // 👇 Hunt3r.exe posts 1 in 5 locks to Twitter
+    await maybePostLock(chain.name, type, source);
+
     return res.status(200).json({ status: "sent" });
   } catch (err) {
     console.error("❌ Telegram webhook error:", err.message, err.stack);
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
+
