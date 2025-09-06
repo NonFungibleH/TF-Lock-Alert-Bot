@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/scheduled-twitter",
-      "schedule": "0 */4 * * *"
-    }
-  ]
-}
