@@ -36,7 +36,7 @@ module.exports = async (req, res) => {
     }
 
     // 1/5 chance (20%)
-    const shouldTweet = Math.random() < 0.2;
+    const shouldTweet = Math.random() < 0.05;
     console.log("Should tweet:", shouldTweet);
     
     if (!shouldTweet) {
