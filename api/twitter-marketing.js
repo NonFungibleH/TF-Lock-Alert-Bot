@@ -42,11 +42,13 @@ module.exports = async (req, res) => {
     });
 
     const tweetText = completion.choices[0].message.content.trim();
-    console.log("Tweet length:", tweetText.length);
-    console.log("Generated tweet:", tweetText);
+    console.log("Full raw tweet text:", tweetText);
+    console.log("Exact character length:", tweetText.length);
 
     if (tweetText.length > 280) {
-      throw new Error("Tweet exceeds 280 characters");
+      console.warn("Tweet exceeds 280 characters, truncating to 280.");
+      tweetText = tweetText.substring(0, 280).replace(/\s+\S*$/, '');
+      if (tweetText.length < 10) tweetText += "...";
     }
 
     console.log("Posting to Twitter...");
@@ -73,7 +75,7 @@ module.exports = async (req, res) => {
       headers: err.headers,
       status: err.statusCode,
       allErrors: err.allErrors,
-      rawError: err.raw // Attempt to capture raw response
+      rawError: err.raw
     }, err.stack);
     return res.status(500).json({ error: "Twitter API request failed", code: err.code, details: err.data, stack: err.stack });
   }
