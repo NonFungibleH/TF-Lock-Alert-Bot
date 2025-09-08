@@ -11,7 +11,7 @@ jobs:
       - name: Run curl to post marketing tweet
         run: |
           curl -X POST \
-            -H "Authorization: Bearer ${{ secrets.TWITTER_BEARER_TOKEN }}" \
+            -H "Authorization: Bearer ${TWITTER_BEARER_TOKEN}" \
             https://tf-lock-alert-bot.vercel.app/api/twitter-marketing
         env:
           TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
