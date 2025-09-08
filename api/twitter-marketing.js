@@ -41,7 +41,7 @@ module.exports = async (req, res) => {
       messages: [{ role: "user", content: prompt }]
     });
 
-    let tweetText = completion.choices[0].message.content.trim(); // Changed to let
+    let tweetText = completion.choices[0].message.content.trim();
     console.log("Full raw tweet text:", tweetText);
     console.log("Exact character length:", tweetText.length);
 
@@ -51,6 +51,7 @@ module.exports = async (req, res) => {
       if (tweetText.length < 10) tweetText += "...";
     }
 
+    console.log("Tweeting with text:", tweetText); // Added debug
     console.log("Posting to Twitter...");
     console.log("Twitter client config:", {
       hasApiKey: !!process.env.TWITTER_API_KEY,
