@@ -47,6 +47,12 @@ module.exports = async (req, res) => {
     console.log("Generated tweet:", tweetText);
 
     console.log("Posting to Twitter...");
+    console.log("Twitter client config:", {
+      hasApiKey: !!process.env.TWITTER_API_KEY,
+      hasApiSecret: !!process.env.TWITTER_API_SECRET,
+      hasAccessToken: !!process.env.TWITTER_ACCESS_TOKEN,
+      hasAccessSecret: !!process.env.TWITTER_ACCESS_SECRET
+    });
     const { data } = await twitterClient.v2.tweet(tweetText);
     
     console.log(`📤 ${type} Tweeted: ${tweetText}`);
