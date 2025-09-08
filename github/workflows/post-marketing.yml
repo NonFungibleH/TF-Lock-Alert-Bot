@@ -1,0 +1,9 @@
+name: Post Marketing Tweet
+on:
+  schedule:
+    - cron: '0 */4 * * *' # Runs at 0 minutes past every 4th hour (e.g., 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -X POST https://tf-lock-alert-bot.vercel.app/api/twitter-marketing
