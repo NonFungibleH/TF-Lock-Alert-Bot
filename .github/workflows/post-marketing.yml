@@ -2,9 +2,11 @@ name: Post Marketing Tweet
 on:
   schedule:
     - cron: '0 */4 * * *' # Runs every 4 hours
-  workflow_dispatch: # Adds manual trigger option
+  workflow_dispatch: # Allows manual trigger
 jobs:
   post:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -X POST https://tf-lock-alert-bot.vercel.app/api/twitter-marketing
+      - run: curl -X POST -H "Authorization: Bearer ${TWITTER_BEARER_TOKEN}" https://tf-lock-alert-bot.vercel.app/api/twitter-marketing
+        env:
+          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
