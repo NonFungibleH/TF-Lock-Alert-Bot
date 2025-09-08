@@ -57,10 +57,9 @@ module.exports = async (req, res) => {
       hasAccessSecret: !!process.env.TWITTER_ACCESS_SECRET
     });
 
-    // Post the tweet
-    const { data } = await twitterClient.v2.tweet(tweetText);
-
-    // Check rate limit status
+    const response = await twitterClient.v2.tweet(tweetText);
+    console.log("Raw Twitter Response:", response);
+    const { data } = response;
     const rateLimit = await twitterClient.v2.get("https://api.twitter.com/2/application/rate_limit_status");
     console.log("Rate Limit Status:", rateLimit.data.resources.tweets || "No rate limit data");
 
@@ -73,7 +72,8 @@ module.exports = async (req, res) => {
       data: err.data,
       headers: err.headers,
       status: err.statusCode,
-      allErrors: err.allErrors
+      allErrors: err.allErrors,
+      rawError: err.raw // Attempt to capture raw response
     }, err.stack);
     return res.status(500).json({ error: "Twitter API request failed", code: err.code, details: err.data, stack: err.stack });
   }
