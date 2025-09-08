@@ -9,9 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Run curl to post marketing tweet
-        run: |
-          curl -X POST \
-            -H "Authorization: Bearer ${TWITTER_BEARER_TOKEN}" \
-            https://tf-lock-alert-bot.vercel.app/api/twitter-marketing
         env:
-          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+          BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+        run: |
+          echo "Making request with token length: ${#BEARER_TOKEN}"
+          curl -v -X POST \
+            -H "Authorization: Bearer $BEARER_TOKEN" \
+            -H "Content-Type: application/json" \
+            https://tf-lock-alert-bot.vercel.app/api/twitter-marketing
