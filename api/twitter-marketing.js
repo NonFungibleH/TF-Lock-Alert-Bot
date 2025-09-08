@@ -51,7 +51,7 @@ module.exports = async (req, res) => {
       if (tweetText.length < 10) tweetText += "...";
     }
 
-    console.log("Tweeting with text:", tweetText); // Added debug
+    console.log("Tweeting with text:", tweetText);
     console.log("Posting to Twitter...");
     console.log("Twitter client config:", {
       hasApiKey: !!process.env.TWITTER_API_KEY,
@@ -63,8 +63,15 @@ module.exports = async (req, res) => {
     const response = await twitterClient.v2.tweet(tweetText);
     console.log("Raw Twitter Response:", response);
     const { data } = response;
-    const rateLimit = await twitterClient.v2.get("https://api.twitter.com/2/application/rate_limit_status");
-    console.log("Rate Limit Status:", rateLimit.data.resources.tweets || "No rate limit data");
+    console.log("Tweet ID:", data.id); // Log for verification
+
+    let rateLimit = null;
+    try {
+      rateLimit = await twitterClient.v2.get("https://api.twitter.com/2/application/rate_limit_status");
+      console.log("Rate Limit Status:", rateLimit.data.resources.tweets || "No rate limit data");
+    } catch (rateErr) {
+      console.warn("Failed to fetch rate limit, continuing:", rateErr.message);
+    }
 
     console.log(`📤 ${type} Tweeted: ${tweetText}`);
     return res.status(200).json({ status: "tweeted", tweetId: data.id, type, content: tweetText });
