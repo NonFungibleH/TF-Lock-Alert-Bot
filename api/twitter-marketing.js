@@ -41,7 +41,7 @@ module.exports = async (req, res) => {
       messages: [{ role: "user", content: prompt }]
     });
 
-    const tweetText = completion.choices[0].message.content.trim();
+    let tweetText = completion.choices[0].message.content.trim(); // Changed to let
     console.log("Full raw tweet text:", tweetText);
     console.log("Exact character length:", tweetText.length);
 
