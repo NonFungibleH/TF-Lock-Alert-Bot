@@ -1,13 +1,23 @@
 name: Post Marketing Tweet
 on:
   schedule:
-    - cron: '0 9 * * *' # once per day at 09:00 UTC
+    # Morning post: sometime between 8-12 UTC
+    - cron: '0 8 * * *'   # 08:00 UTC
+    # Evening post: sometime between 16-20 UTC  
+    - cron: '0 16 * * *'  # 16:00 UTC
   workflow_dispatch: # Allows manual trigger
 
 jobs:
   post:
     runs-on: ubuntu-latest
     steps:
+      - name: Wait random time (0-4 hours)
+        run: |
+          # Wait 0-14400 seconds (0-4 hours)
+          wait_seconds=$((RANDOM % 14400))
+          echo "Waiting $wait_seconds seconds ($(($wait_seconds / 3600)) hours) before posting..."
+          sleep $wait_seconds
+
       - name: Run curl to post marketing tweet
         env:
           BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
