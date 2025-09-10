@@ -9,11 +9,45 @@ const twitterClient = new TwitterApi({
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
+const COMMUNITY_LINK = "https://t.co/iEAhyR2PgC";
+
+// Helper function to ensure tweet is under 280 characters
+function ensureTwitterLimit(text, maxLength = 275) { // Use 275 to be safe
+  if (text.length <= maxLength) return text;
+  
+  // Find the last complete sentence or phrase before the limit
+  let truncated = text.substring(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(' ');
+  const lastPeriod = truncated.lastIndexOf('.');
+  const lastEmoji = truncated.lastIndexOf('🔗');
+  
+  // Try to cut at a natural break point
+  const breakPoint = Math.max(lastPeriod, lastSpace);
+  if (breakPoint > maxLength * 0.8) { // If break point is reasonable
+    truncated = text.substring(0, breakPoint);
+  }
+  
+  // Ensure we don't cut off important elements like links
+  if (text.includes(COMMUNITY_LINK) && !truncated.includes(COMMUNITY_LINK)) {
+    // Prioritize keeping the community link
+    const linkStart = text.indexOf(COMMUNITY_LINK);
+    const beforeLink = text.substring(0, linkStart).trim();
+    const availableSpace = maxLength - COMMUNITY_LINK.length - 1; // -1 for space
+    if (beforeLink.length > availableSpace) {
+      const trimmed = beforeLink.substring(0, availableSpace - 3) + "...";
+      truncated = `${trimmed} ${COMMUNITY_LINK}`;
+    } else {
+      truncated = `${beforeLink} ${COMMUNITY_LINK}`;
+    }
+  }
+  
+  return truncated;
+}
+
 module.exports = async (req, res) => {
   try {
     console.log("Request method:", req.method);
     console.log("Auth header:", req.headers.authorization);
-    console.log("Bearer token set:", process.env.TWITTER_BEARER_TOKEN ? "YES" : "NO");
 
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
@@ -24,67 +58,98 @@ module.exports = async (req, res) => {
 
     if (!authHeader || authHeader !== expectedAuth) {
       console.log("Authorization failed");
-      console.log("Received:", authHeader);
-      console.log("Expected:", expectedAuth ? "Bearer [TOKEN]" : "NOT SET");
       return res.status(403).json({ error: "Unauthorized" });
     }
 
-    const type = Math.random() < 0.5 ? "marketing" : "educational";
+    // Generate marketing/educational content (not lock alerts)
+    const topics = [
+      "importance_of_locks",
+      "red_flags_no_locks", 
+      "how_locks_work",
+      "dd_checklist",
+      "trust_indicators",
+      "common_scams",
+      "community_benefits"
+    ];
+    
+    const selectedTopic = topics[Math.floor(Math.random() * topics.length)];
+    
+    let prompt;
+    switch (selectedTopic) {
+      case "importance_of_locks":
+        prompt = `Write a first-person Twitter post as a liquidity lock specialist explaining why liquidity locks are crucial for DeFi investor due diligence. Mention that I help traders spot trustworthy projects. Include emojis and end with "Join my community for real-time lock alerts: ${COMMUNITY_LINK}". Keep under 270 characters.`;
+        break;
+      case "red_flags_no_locks":
+        prompt = `Write a first-person Twitter post as a liquidity lock specialist warning about the risks of investing in projects without locked liquidity. Explain what could go wrong (rug pulls, exit scams). Include emojis and end with "I share lock alerts to help you avoid these risks: ${COMMUNITY_LINK}". Keep under 270 characters.`;
+        break;
+      case "how_locks_work":
+        prompt = `Write a first-person Twitter post as a liquidity lock specialist explaining in simple terms how liquidity locks protect investors. Mention that locked liquidity means devs can't drain the pool. Include emojis and end with "Follow my community for lock updates: ${COMMUNITY_LINK}". Keep under 270 characters.`;
+        break;
+      case "dd_checklist":
+        prompt = `Write a first-person Twitter post as a liquidity lock specialist sharing a quick DD checklist for DeFi projects (check locks, team transparency, etc.). Position yourself as someone who helps traders with research. Include emojis and end with "Join my community for lock alerts: ${COMMUNITY_LINK}". Keep under 270 characters.`;
+        break;
+      case "trust_indicators":
+        prompt = `Write a first-person Twitter post as a liquidity lock specialist about why projects that lock liquidity are more trustworthy. Explain it shows long-term commitment. Include emojis and end with "I track these signals daily for my community: ${COMMUNITY_LINK}". Keep under 270 characters.`;
+        break;
+      case "common_scams":
+        prompt = `Write a first-person Twitter post as a liquidity lock specialist warning about common DeFi scams and how locked liquidity helps avoid them. Share your expertise. Include emojis and end with "Stay safe - follow my lock alerts: ${COMMUNITY_LINK}". Keep under 270 characters.`;
+        break;
+      case "community_benefits":
+        prompt = `Write a first-person Twitter post as a liquidity lock specialist highlighting the benefits of joining a community focused on lock alerts and DD. Mention real-time notifications and safer investing. Include emojis and end with "Join my community: ${COMMUNITY_LINK}". Keep under 270 characters.`;
+        break;
+    }
 
-    let prompt = type === "marketing"
-      ? "Create a promotional Twitter post explaining our Telegram group's lock alert signals. Goal: Drive users to join the Telegram channel. Make it engaging, use emojis, mention benefits like real-time alerts on liquidity locks. Include a link to the Telegram (replace with actual: t.me/yourgroup). Ensure the response is under 280 characters."
-      : "Create an educational Twitter post about the importance of liquidity locks in due diligence (DD) for crypto projects. Explain why they matter, risks without them, tips. Use simple language, emojis. End with a call to follow for more tips and join our Telegram for alerts. Ensure the response is under 280 characters.";
-
-    console.log("Generating tweet content...");
+    console.log("Generating tweet content for topic:", selectedTopic);
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }]
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 100, // Limit tokens to help with length control
+      temperature: 0.8 // Add some creativity variation
     });
 
     let tweetText = completion.choices[0].message.content.trim();
-    console.log("Full raw tweet text:", tweetText);
-    console.log("Exact character length:", tweetText.length);
+    
+    // Remove any quote marks that might be added
+    tweetText = tweetText.replace(/^["']|["']$/g, '');
+    
+    console.log("Generated tweet text:", tweetText);
+    console.log("Character length before processing:", tweetText.length);
+
+    // Ensure tweet is under character limit
+    tweetText = ensureTwitterLimit(tweetText);
+    
+    console.log("Final tweet text:", tweetText);
+    console.log("Final character length:", tweetText.length);
 
     if (tweetText.length > 280) {
-      console.warn("Tweet exceeds 280 characters, truncating to 280.");
-      tweetText = tweetText.substring(0, 280).replace(/\s+\S*$/, '');
-      if (tweetText.length < 10) tweetText += "...";
+      console.error("Tweet still over limit after processing:", tweetText.length);
+      return res.status(400).json({ error: "Tweet exceeds character limit after processing" });
     }
 
-    console.log("Tweeting with text:", tweetText);
     console.log("Posting to Twitter...");
-    console.log("Twitter client config:", {
-      hasApiKey: !!process.env.TWITTER_API_KEY,
-      hasApiSecret: !!process.env.TWITTER_API_SECRET,
-      hasAccessToken: !!process.env.TWITTER_ACCESS_TOKEN,
-      hasAccessSecret: !!process.env.TWITTER_ACCESS_SECRET
-    });
-
     const response = await twitterClient.v2.tweet(tweetText);
-    console.log("Raw Twitter Response:", response);
     const { data } = response;
-    console.log("Tweet ID:", data.id); // Log for verification
 
-    let rateLimit = null;
-    try {
-      rateLimit = await twitterClient.v2.get("https://api.twitter.com/2/application/rate_limit_status");
-      console.log("Rate Limit Status:", rateLimit.data.resources.tweets || "No rate limit data");
-    } catch (rateErr) {
-      console.warn("Failed to fetch rate limit, continuing:", rateErr.message);
-    }
-
-    console.log(`📤 ${type} Tweeted: ${tweetText}`);
-    return res.status(200).json({ status: "tweeted", tweetId: data.id, type, content: tweetText });
+    console.log(`📤 Marketing tweet posted (topic: ${selectedTopic}): ${tweetText}`);
+    return res.status(200).json({ 
+      status: "tweeted", 
+      tweetId: data.id, 
+      type: "marketing",
+      topic: selectedTopic,
+      content: tweetText,
+      length: tweetText.length
+    });
   } catch (err) {
     console.error("Twitter API Error:", {
       code: err.code,
       message: err.message,
       data: err.data,
-      headers: err.headers,
-      status: err.statusCode,
-      allErrors: err.allErrors,
-      rawError: err.raw
-    }, err.stack);
-    return res.status(500).json({ error: "Twitter API request failed", code: err.code, details: err.data, stack: err.stack });
+      status: err.statusCode
+    });
+    return res.status(500).json({ 
+      error: "Twitter API request failed", 
+      code: err.code, 
+      details: err.data 
+    });
   }
 };
