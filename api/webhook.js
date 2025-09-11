@@ -85,9 +85,44 @@ const EVENT_TOPICS = {
   "0x3bf9c85fbe37d401523942f10940796acef64062e1a1c45647978e32f4969f5c": "onLock",
   "0x69963d4b9cdadfa6aee5e588b147db4212209aa72fd9b3c7f655e20cd7efa762": "DepositNFT",
 };
+
+// PBTC Detection
 const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCase();
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3";
 const PBTC_WALLET = "0xaD7c34923db6f834Ad48474Acc4E0FC2476bF23f".toLowerCase(); // PBTC initiator wallet
+const PBTC_DEPLOY_METHOD_ID = "0xce84399a"; // deployTokenAndCreatePoolProxy method signature
+
+// -----------------------------------------
+// Helper function to detect PBTC transactions
+// -----------------------------------------
+function isPbtcTransaction(body, fromAddress, chainId) {
+  // Check 1: Transaction initiated by PBTC wallet on Base chain
+  if (fromAddress === PBTC_WALLET && chainId === "8453") {
+    console.log("🔍 PBTC wallet detected on Base chain");
+    return true;
+  }
+  
+  // Check 2: Look for deployTokenAndCreatePoolProxy method call
+  const txs = Array.isArray(body.txs) ? body.txs : [];
+  for (const tx of txs) {
+    if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
+      console.log("🔍 PBTC deployTokenAndCreatePoolProxy method detected");
+      return true;
+    }
+  }
+  
+  // Check 3: Look in transaction traces for the method call
+  if (body.traces && Array.isArray(body.traces)) {
+    for (const trace of body.traces) {
+      if (trace.input && trace.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
+        console.log("🔍 PBTC method found in traces");
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
 
 // -----------------------------------------
 // Webhook
@@ -119,8 +154,13 @@ module.exports = async (req, res) => {
 
     let lockLog = null;
     let isAdshareSource = false;
-    let isPbtcInitiated = false;
     const fromAddress = (body.txs?.[0]?.from || "").toLowerCase(); // Get the 'from' address of the transaction
+
+    // Enhanced PBTC detection
+    const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
+    if (isPbtcInitiated) {
+      console.log("📂 PBTC transaction detected!");
+    }
 
     for (let i = 0; i < logs.length; i++) {
       const l = logs[i];
@@ -153,12 +193,6 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Check if the transaction was initiated by the PBTC wallet on Base chain
-    if (fromAddress === PBTC_WALLET && chainId === "8453") {
-      isPbtcInitiated = true;
-      console.log("📂 Detected PBTC initiated transaction on Base chain");
-    }
-
     if (!lockLog) {
       console.log("❌ No matching lock log found");
       return res.status(200).json({ ok: true, note: "No lock event detected" });
@@ -181,31 +215,32 @@ module.exports = async (req, res) => {
     const isTeamFinance = TEAM_FINANCE_CONTRACTS.has(lockerAddr);
     const isGoPlus = GOPLUS_CONTRACTS[lockerAddr];
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
-    console.log(
-      `✅ Matched lockLog: addr=${lockerAddr}, event=${eventName}, source=${
-        isTeamFinance ? "Team Finance" : isGoPlus ? "GoPlus" : uncxVersion ? "UNCX" : "Unknown"
-      }`
-    );
 
-    // Modified source logic to check for PBTC wallet
-    const source = isTeamFinance
-      ? isPbtcInitiated
-        ? "Team Finance (via PBTC)"
-        : isAdshareSource
-        ? "Team Finance (via Adshare)"
-        : "Team Finance"
-      : isGoPlus
-      ? "GoPlus"
-      : uncxVersion
-      ? "UNCX"
-      : "Unknown";
+    // Updated source logic - PBTC takes priority over Team Finance
+    let source;
+    if (isPbtcInitiated) {
+      source = "PBTC";
+      console.log("✅ Source identified as PBTC");
+    } else if (isTeamFinance) {
+      source = isAdshareSource ? "Team Finance (via Adshare)" : "Team Finance";
+      console.log(`✅ Source identified as ${source}`);
+    } else if (isGoPlus) {
+      source = "GoPlus";
+      console.log("✅ Source identified as GoPlus");
+    } else if (uncxVersion) {
+      source = "UNCX";
+      console.log("✅ Source identified as UNCX");
+    } else {
+      source = "Unknown";
+      console.log("⚠️ Source could not be identified");
+    }
 
+    // Updated type logic
     let type = "Unknown";
-    if (isTeamFinance) {
-      // Force V3 Token for PBTC-initiated transactions on Base
-      type = isPbtcInitiated
-        ? "V3 Token"
-        : eventName === "Deposit" ? "V2 Token"
+    if (isPbtcInitiated) {
+      type = "V3 Token"; // PBTC uses Team Finance V3 contracts
+    } else if (isTeamFinance) {
+      type = eventName === "Deposit" ? "V2 Token"
         : eventName === "DepositNFT" ? "V3 Token"
         : eventName === "onLock" ? "V3 Token"
         : eventName === "LiquidityLocked" ? "V4 Token"
@@ -215,6 +250,8 @@ module.exports = async (req, res) => {
     } else if (isGoPlus) {
       type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
     }
+
+    console.log(`✅ Final classification: Source=${source}, Type=${type}`);
 
     console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
     console.log("📌 TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_GROUP_CHAT_ID);
