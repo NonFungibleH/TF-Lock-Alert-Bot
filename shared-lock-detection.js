@@ -1,4 +1,4 @@
-// shared-lock-detection.js - Updated with GoPlus support
+// shared-lock-detection.js - Fixed version
 const { keccak256 } = require("js-sha3");
 
 const sentTxs = new Set(); // Shared in-memory; for prod, use Redis or similar if needed
@@ -81,7 +81,7 @@ const EVENT_TOPICS = {
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef": "Transfer",
 };
 
-// GoPlus specific event topics (update these as you discover more)
+// GoPlus specific event topics
 const GOPLUS_EVENT_TOPICS = {
   "0x84b0481c1600515c2ca5bf787b1ee44cfafc7c24906e9b54bb42e7de9c6c2c17": "TokenLocked",
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef": "Transfer",
@@ -91,6 +91,9 @@ const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCas
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3";
 const PBTC_WALLET = "0xaD7c34923db6f834Ad48474Acc4E0FC2476bF23f".toLowerCase();
 const PBTC_DEPLOY_METHOD_ID = "0xce84399a";
+
+// Create GoPlus contract set for faster lookups
+const GOPLUS_CONTRACT_SET = new Set(Object.keys(GOPLUS_CONTRACTS).map(s => s.toLowerCase()));
 
 // GoPlus detection functions
 function detectGoPlusLock(log, eventMap) {
@@ -147,6 +150,9 @@ function detectLock(body) {
   const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
   const logs = Array.isArray(body.logs) ? body.logs : [];
 
+  console.log(`🌐 Processing chain: ${chain.name} (${chainId})`);
+  console.log(`🪵 Processing ${logs.length} logs`);
+
   // Build ABI event map
   const eventMap = {};
   if (Array.isArray(body.abi)) {
@@ -157,6 +163,7 @@ function detectLock(body) {
         eventMap[hash] = { name: ev.name, signature: sig, inputs: ev.inputs };
       }
     });
+    console.log(`🗺️ Built eventMap with ${Object.keys(eventMap).length} entries`);
   }
 
   let lockLog = null;
@@ -164,44 +171,69 @@ function detectLock(body) {
   const fromAddress = (body.txs?.[0]?.from || "").toLowerCase();
   const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
 
-  for (const l of logs) {
+  console.log(`👤 From address: ${fromAddress}`);
+  console.log(`🅿️ PBTC initiated: ${isPbtcInitiated}`);
+
+  for (let i = 0; i < logs.length; i++) {
+    const l = logs[i];
     const addr = (l.address || "").toLowerCase();
     
-    // Enhanced event resolution
-    let ev = l.name || l.eventName || l.decoded?.name || l.decoded?.event || 
-             (eventMap[l.topic0] ? eventMap[l.topic0].name : "") ||
-             GOPLUS_EVENT_TOPICS[l.topic0];
-             
+    // Enhanced event resolution - prioritize basic resolution first
+    let ev = l.name || l.eventName || l.decoded?.name || l.decoded?.event;
+    
+    if (!ev && eventMap[l.topic0]) {
+      ev = eventMap[l.topic0].name;
+    }
+    
     if (!ev && EVENT_TOPICS[l.topic0]) {
       ev = EVENT_TOPICS[l.topic0];
+    }
+    
+    if (!ev && GOPLUS_EVENT_TOPICS[l.topic0]) {
+      ev = GOPLUS_EVENT_TOPICS[l.topic0];
     }
 
     const isKnown = KNOWN_LOCKERS.has(addr);
     const isLockEvent = LOCK_EVENTS.has(ev);
+    const isGoPlusContract = GOPLUS_CONTRACT_SET.has(addr);
     
-    // Standard detection for non-GoPlus contracts
-    if (isKnown && isLockEvent && !Object.keys(GOPLUS_CONTRACTS).map(s => s.toLowerCase()).includes(addr)) {
+    console.log(`Log[${i}]: addr=${addr}`);
+    console.log(`  ↳ topic0=${l.topic0}`);
+    console.log(`  ↳ event=${ev || "N/A"}`);
+    console.log(`  ↳ known=${isKnown}, lockEvent=${isLockEvent}, goplus=${isGoPlusContract}`);
+    
+    // Standard detection for Team Finance and UNCX (non-GoPlus contracts)
+    if (isKnown && isLockEvent && !isGoPlusContract) {
       lockLog = { ...l, resolvedEvent: ev };
+      console.log(`✅ Standard lock detected: ${ev} from ${addr}`);
     }
     
-    // Special GoPlus detection
-    if (!lockLog) {
+    // Special GoPlus detection (only if standard detection didn't find anything)
+    if (!lockLog && isGoPlusContract) {
       const goPlusLock = detectGoPlusLock(l, eventMap);
       if (goPlusLock) {
         lockLog = goPlusLock;
+        console.log(`✅ GoPlus lock detected: ${goPlusLock.resolvedEvent} from ${addr}`);
       }
     }
     
     // Adshares detection
     if (addr === ADS_FUND_FACTORY && l.topic0 === TOKEN_CREATED_TOPIC) {
       isAdshareSource = true;
+      console.log("📂 Detected Adshares factory source");
     }
   }
 
-  if (!lockLog) return null;
+  if (!lockLog) {
+    console.log("❌ No lock event found");
+    return null;
+  }
 
   const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
-  if (!txHash || sentTxs.has(txHash)) return null;
+  if (!txHash || sentTxs.has(txHash)) {
+    console.log(`⏩ Skipping duplicate or missing txHash: ${txHash}`);
+    return null;
+  }
   sentTxs.add(txHash);
 
   const eventName = lockLog.resolvedEvent || "Unknown";
@@ -240,6 +272,8 @@ function detectLock(body) {
   } else if (isGoPlus) {
     type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
   }
+
+  console.log(`🎯 Final result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
 
   return { chain, type, source, explorerLink, txHash };
 }
