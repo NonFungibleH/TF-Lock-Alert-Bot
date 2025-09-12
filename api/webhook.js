@@ -6,6 +6,40 @@ const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
 
 // -----------------------------------------
+// Dashboard Integration Function
+// -----------------------------------------
+async function sendToDashboard(lockResult, body) {
+  try {
+    const dashboardData = {
+      ...lockResult,
+      // Extract additional data from the webhook body if available
+      contractAddress: body.logs?.find(log => log.resolvedEvent)?.address,
+      eventName: body.logs?.find(log => log.resolvedEvent)?.resolvedEvent,
+      blockNumber: body.txs?.[0]?.blockNumber,
+      gasUsed: body.txs?.[0]?.gasUsed,
+      timestamp: new Date().toISOString()
+    }
+    
+    // Send to dashboard API (adjust URL for production)
+    const dashboardUrl = process.env.NODE_ENV === 'production' 
+      ? process.env.DASHBOARD_URL || 'https://your-domain.vercel.app/api/locks'  // Replace with your production URL
+      : 'http://localhost:3000/api/locks'
+    
+    await axios.post(dashboardUrl, dashboardData, {
+      timeout: 5000,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    })
+    
+    console.log('✅ Lock sent to dashboard:', lockResult.txHash)
+  } catch (error) {
+    console.error('❌ Failed to send to dashboard:', error.message)
+    // Don't fail the webhook if dashboard is down
+  }
+}
+
+// -----------------------------------------
 // Shared Detection Logic (Inline)
 // -----------------------------------------
 const sentTxs = new Set(); // Shared in-memory; for prod, use Redis or similar if needed
@@ -337,6 +371,10 @@ module.exports = async (req, res) => {
     });
     
     console.log("📤 Telegram message sent:", message);
+    
+    // Send to dashboard
+    await sendToDashboard(lockResult, body);
+    
     return res.status(200).json({ status: "sent" });
     
   } catch (err) {
