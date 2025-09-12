@@ -20,17 +20,17 @@ async function sendToDashboard(lockResult, body) {
       timestamp: new Date().toISOString()
     }
     
-    // Send to dashboard API (adjust URL for production)
-    const dashboardUrl = process.env.NODE_ENV === 'production' 
-      ? process.env.DASHBOARD_URL || 'hhttps://tf-lock-alert-bot.vercel.app/api/locks'  
-      : 'http://localhost:3000/api/locks'
-    
-    await axios.post(dashboardUrl, dashboardData, {
-      timeout: 5000,
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    })
+    // Send to dashboard API - fixed URL
+const dashboardUrl = 'https://tf-lock-alert-bot.vercel.app/api/locks'
+
+console.log('Dashboard URL:', dashboardUrl) // Add this debug log
+
+await axios.post(dashboardUrl, dashboardData, {
+  timeout: 5000,
+  headers: {
+    'Content-Type': 'application/json'
+  }
+})
     
     console.log('✅ Lock sent to dashboard:', lockResult.txHash)
   } catch (error) {
