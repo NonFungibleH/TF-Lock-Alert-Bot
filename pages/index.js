@@ -244,15 +244,15 @@ export default function Dashboard() {
                           <span className="text-purple-400 font-medium">{lock.source}</span>
                         </td>
                         <td className="px-6 py-4">
-                          
-                            href={lock.explorerLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-purple-400 hover:text-purple-300 font-mono text-sm"
-                          >
-                            {lock.txHash?.slice(0, 6)}...{lock.txHash?.slice(-4)}
-                          </a>
-                        </td>
+  
+    href={lock.explorerLink}
+    target="_blank"
+    rel="noopener noreferrer"
+    className="text-purple-400 hover:text-purple-300 font-mono text-sm"
+  >
+    {lock.txHash?.slice(0, 6)}...{lock.txHash?.slice(-4)}
+  </a>
+</td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-2">
                             <div className="w-6 h-6 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full"></div>
