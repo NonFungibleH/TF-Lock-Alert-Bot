@@ -149,9 +149,9 @@ export default function Dashboard() {
                 className="w-full bg-black/50 border border-purple-500/30 rounded-lg px-3 py-2 text-white focus:border-purple-400 focus:outline-none"
               >
                 <option value="">All Types</option>
-                <option value="V2 Token">V2 Token</option>
-                <option value="V3 Token">V3 Token</option>
-                <option value="V4 Token">V4 Token</option>
+                <option value="V2">V2</option>
+                <option value="V3">V3</option>
+                <option value="V4">V4</option>
                 <option value="Liquidity">Liquidity</option>
               </select>
             </div>
