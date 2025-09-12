@@ -39,17 +39,17 @@ export default function Dashboard() {
 
     if (filters.lockType) {
       filtered = filtered.filter(lock => 
-        lock.type.toLowerCase().includes(filters.lockType.toLowerCase())
+        lock.type && lock.type.toLowerCase().includes(filters.lockType.toLowerCase())
       )
     }
     if (filters.chain) {
       filtered = filtered.filter(lock => 
-        lock.chain.name.toLowerCase().includes(filters.chain.toLowerCase())
+        lock.chain && lock.chain.name && lock.chain.name.toLowerCase().includes(filters.chain.toLowerCase())
       )
     }
     if (filters.platform) {
       filtered = filtered.filter(lock => 
-        lock.source.toLowerCase().includes(filters.platform.toLowerCase())
+        lock.source && lock.source.toLowerCase().includes(filters.platform.toLowerCase())
       )
     }
     if (filters.minValue) {
@@ -105,6 +105,7 @@ export default function Dashboard() {
   }
 
   const getTypeColor = (type) => {
+    if (!type) return 'bg-gray-500/20 text-gray-300'
     if (type.includes('Token')) return 'bg-green-500/20 text-green-300'
     if (type.includes('Liquidity')) return 'bg-blue-500/20 text-blue-300'
     return 'bg-purple-500/20 text-purple-300'
@@ -227,32 +228,38 @@ export default function Dashboard() {
                 ) : (
                   filteredLocks.map((lock, index) => {
                     const performance = calculatePerformance(lock.lockPrice, lock.currentPrice)
+                    const shortHash = lock.txHash ? lock.txHash.substring(0, 6) + '...' + lock.txHash.substring(lock.txHash.length - 4) : 'N/A'
+                    
                     return (
                       <tr key={index} className="border-t border-purple-500/10 hover:bg-purple-500/5">
                         <td className="px-6 py-4">
                           <span className={`px-3 py-1 rounded-full text-xs font-medium ${getTypeColor(lock.type)}`}>
-                            {lock.type}
+                            {lock.type || 'Unknown'}
                           </span>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-2">
-                            <div className={`w-3 h-3 rounded-full ${getChainColor(lock.chain.name)}`}></div>
-                            <span>{lock.chain.name}</span>
+                            <div className={`w-3 h-3 rounded-full ${getChainColor(lock.chain?.name)}`}></div>
+                            <span>{lock.chain?.name || 'Unknown'}</span>
                           </div>
                         </td>
                         <td className="px-6 py-4">
-                          <span className="text-purple-400 font-medium">{lock.source}</span>
+                          <span className="text-purple-400 font-medium">{lock.source || 'Unknown'}</span>
                         </td>
                         <td className="px-6 py-4">
-  
-    href={lock.explorerLink}
-    target="_blank"
-    rel="noopener noreferrer"
-    className="text-purple-400 hover:text-purple-300 font-mono text-sm"
-  >
-    {lock.txHash?.slice(0, 6)}...{lock.txHash?.slice(-4)}
-  </a>
-</td>
+                          {lock.explorerLink ? (
+                            
+                              href={lock.explorerLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-purple-400 hover:text-purple-300 font-mono text-sm"
+                            >
+                              {shortHash}
+                            </a>
+                          ) : (
+                            <span className="text-gray-500 font-mono text-sm">{shortHash}</span>
+                          )}
+                        </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-2">
                             <div className="w-6 h-6 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full"></div>
