@@ -1,14 +1,19 @@
 // pages/api/locks.js
 
-// In-memory storage for demo - in production, use a database
+// In-memory storage - keeps only the last 20 locks
 let locksData = []
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     try {
-      // Return stored locks data with enhanced information
+      // Return the most recent locks with enhanced price information
       const enrichedLocks = await enrichLocksWithPrices(locksData)
-      res.status(200).json(enrichedLocks)
+      // Sort by timestamp (newest first) and return only last 20
+      const recentLocks = enrichedLocks
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        .slice(0, 20)
+      
+      res.status(200).json(recentLocks)
     } catch (error) {
       console.error('Error serving locks:', error)
       res.status(500).json({ error: 'Failed to fetch locks' })
@@ -23,52 +28,68 @@ export default async function handler(req, res) {
         ...newLock,
         id: Date.now(),
         timestamp: new Date().toISOString(),
-        // Add mock data for fields not provided by webhook
-        token1: extractToken1(newLock.source, newLock.type) || 'TOKEN',
+        // Extract token info if available, otherwise use mock data for now
+        token1: extractTokenFromWebhookData(newLock) || generateTokenName(newLock.source),
         token2: 'USDT',
-        usdValue: generateMockUSDValue(), 
-        lockPrice: generateMockPrice(), 
+        usdValue: generateRealisticUSDValue(), 
+        lockPrice: generateRealisticPrice(), 
         currentPrice: null // This will be updated by price API
       }
       
-      // Add to in-memory storage (limit to last 100 locks)
-      locksData.unshift(enhancedLock) // Add to beginning for newest first
-      if (locksData.length > 100) {
-        locksData = locksData.slice(0, 100)
+      // Add to beginning of array (newest first)
+      locksData.unshift(enhancedLock)
+      
+      // Keep only the last 20 locks
+      if (locksData.length > 20) {
+        locksData = locksData.slice(0, 20)
       }
       
-      console.log('Lock added to dashboard:', enhancedLock.txHash)
-      res.status(201).json({ success: true })
+      console.log(`Lock added to dashboard (${locksData.length}/20):`, enhancedLock.txHash)
+      res.status(201).json({ success: true, totalLocks: locksData.length })
     } catch (error) {
       console.error('Error adding lock:', error)
       res.status(500).json({ error: 'Failed to add lock' })
     }
+  } else if (req.method === 'DELETE') {
+    // Clear all locks (useful for testing)
+    locksData = []
+    console.log('All locks cleared')
+    res.status(200).json({ success: true, message: 'All locks cleared' })
   } else {
     res.status(405).json({ error: 'Method not allowed' })
   }
 }
 
-// Helper function to extract token name from source/type
-function extractToken1(source, type) {
-  // Generate realistic token names based on source
-  const tokens = {
-    'Team Finance': ['TF', 'TEAM', 'FINX', 'LOCK'],
+// Try to extract token information from webhook data
+function extractTokenFromWebhookData(lockData) {
+  // Look for token info in the raw webhook data
+  if (lockData.rawData && lockData.rawData.logs) {
+    // This is where you could parse the actual token address/name from logs
+    // For now, return null to use fallback
+  }
+  return null
+}
+
+// Generate realistic token names based on platform
+function generateTokenName(source) {
+  const tokensByPlatform = {
+    'Team Finance': ['TEAM', 'FINX', 'LOCK', 'TFI'],
     'UNCX': ['UNCX', 'UNI', 'SWAP', 'DEX'],
     'GoPlus': ['GPL', 'SAFE', 'AUDIT', 'PLUS'],
     'PBTC': ['PBTC', 'BTC', 'WRAP', 'BASE']
   }
   
-  const sourceTokens = tokens[source] || ['TOKEN', 'COIN', 'ASSET', 'CRYPTO']
-  return sourceTokens[Math.floor(Math.random() * sourceTokens.length)]
+  const platformTokens = tokensByPlatform[source] || ['TOKEN', 'COIN', 'ASSET', 'CRYPTO']
+  return platformTokens[Math.floor(Math.random() * platformTokens.length)]
 }
 
-// Generate realistic USD values
-function generateMockUSDValue() {
+// Generate realistic USD values based on typical lock amounts
+function generateRealisticUSDValue() {
   const ranges = [
-    { min: 1000, max: 10000, weight: 0.3 },
-    { min: 10000, max: 100000, weight: 0.4 },
-    { min: 100000, max: 1000000, weight: 0.25 },
-    { min: 1000000, max: 10000000, weight: 0.05 }
+    { min: 5000, max: 50000, weight: 0.4 },      // Small locks
+    { min: 50000, max: 500000, weight: 0.35 },   // Medium locks
+    { min: 500000, max: 2000000, weight: 0.2 },  // Large locks
+    { min: 2000000, max: 10000000, weight: 0.05 } // Whale locks
   ]
   
   const random = Math.random()
@@ -81,16 +102,16 @@ function generateMockUSDValue() {
     }
   }
   
-  return 50000 // fallback
+  return 100000 // fallback
 }
 
 // Generate realistic token prices
-function generateMockPrice() {
+function generateRealisticPrice() {
   const priceTypes = [
-    { min: 0.000001, max: 0.001, weight: 0.3 }, // micro tokens
-    { min: 0.001, max: 1, weight: 0.4 },        // small tokens  
-    { min: 1, max: 100, weight: 0.25 },         // medium tokens
-    { min: 100, max: 10000, weight: 0.05 }      // large tokens
+    { min: 0.000001, max: 0.01, weight: 0.3 },   // Micro cap tokens
+    { min: 0.01, max: 10, weight: 0.4 },         // Small cap tokens  
+    { min: 10, max: 1000, weight: 0.25 },        // Mid cap tokens
+    { min: 1000, max: 50000, weight: 0.05 }      // Large cap tokens
   ]
   
   const random = Math.random()
@@ -140,9 +161,9 @@ async function enrichLocksWithPrices(locks) {
       } else if (lock.token1?.toLowerCase().includes('matic')) {
         currentPrice = prices['matic-network']?.usd || currentPrice
       } else {
-        // For other tokens, simulate price movement
-        const lockPrice = lock.lockPrice || generateMockPrice()
-        const change = (Math.random() - 0.5) * 0.3 // ±15% change
+        // For other tokens, simulate realistic price movement
+        const lockPrice = lock.lockPrice || generateRealisticPrice()
+        const change = (Math.random() - 0.5) * 0.4 // ±20% change
         currentPrice = lockPrice * (1 + change)
       }
       
@@ -157,64 +178,19 @@ async function enrichLocksWithPrices(locks) {
   }
 }
 
-// Fallback function for mock prices
+// Fallback function for mock prices when API fails
 function enrichWithMockPrices(locks) {
   return locks.map(lock => {
     if (!lock.currentPrice) {
-      const lockPrice = lock.lockPrice || generateMockPrice()
-      const change = (Math.random() - 0.5) * 0.3 // ±15% change
+      const lockPrice = lock.lockPrice || generateRealisticPrice()
+      const change = (Math.random() - 0.5) * 0.4 // ±20% change
       lock.currentPrice = Math.max(0, lockPrice * (1 + change))
     }
     return lock
   })
 }
 
-// Add some sample data if empty (for testing)
-if (locksData.length === 0) {
-  const sampleLocks = [
-    {
-      id: 1,
-      chain: { name: 'Ethereum', explorer: 'https://etherscan.io/tx/' },
-      type: 'V3 Token',
-      source: 'Team Finance',
-      txHash: '0x1234567890abcdef1234567890abcdef12345678',
-      explorerLink: 'https://etherscan.io/tx/0x1234567890abcdef1234567890abcdef12345678',
-      token1: 'TEAM',
-      token2: 'USDT',
-      usdValue: 125000,
-      lockPrice: 2.45,
-      currentPrice: 2.67,
-      timestamp: new Date(Date.now() - 3600000).toISOString() // 1 hour ago
-    },
-    {
-      id: 2,
-      chain: { name: 'BNB Chain', explorer: 'https://bscscan.com/tx/' },
-      type: 'V4 Token',
-      source: 'UNCX',
-      txHash: '0xabcdef1234567890abcdef1234567890abcdef12',
-      explorerLink: 'https://bscscan.com/tx/0xabcdef1234567890abcdef1234567890abcdef12',
-      token1: 'UNCX',
-      token2: 'USDT',
-      usdValue: 89000,
-      lockPrice: 0.045,
-      currentPrice: 0.042,
-      timestamp: new Date(Date.now() - 7200000).toISOString() // 2 hours ago
-    },
-    {
-      id: 3,
-      chain: { name: 'Base', explorer: 'https://basescan.org/tx/' },
-      type: 'V3 Token',
-      source: 'PBTC',
-      txHash: '0x567890abcdef1234567890abcdef1234567890ab',
-      explorerLink: 'https://basescan.org/tx/0x567890abcdef1234567890abcdef1234567890ab',
-      token1: 'PBTC',
-      token2: 'USDT',
-      usdValue: 340000,
-      lockPrice: 15.20,
-      currentPrice: 16.85,
-      timestamp: new Date(Date.now() - 10800000).toISOString() // 3 hours ago
-    }
-  ]
-  
-  locksData = sampleLocks
-}
+// Clear sample data - start with empty array for real data only
+// Remove this if you want to keep some sample data initially
+console.log('Lock API initialized - waiting for webhook data (last 20 locks will be displayed)')
+locksData = [] // Start with empty array
