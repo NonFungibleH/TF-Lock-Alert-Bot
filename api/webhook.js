@@ -22,7 +22,7 @@ async function sendToDashboard(lockResult, body) {
     
     // Send to dashboard API (adjust URL for production)
     const dashboardUrl = process.env.NODE_ENV === 'production' 
-      ? process.env.DASHBOARD_URL || 'https://your-domain.vercel.app/api/locks'  // Replace with your production URL
+      ? process.env.DASHBOARD_URL || 'hhttps://tf-lock-alert-bot.vercel.app/api/locks'  
       : 'http://localhost:3000/api/locks'
     
     await axios.post(dashboardUrl, dashboardData, {
