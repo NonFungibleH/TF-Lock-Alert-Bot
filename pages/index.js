@@ -1,4 +1,4 @@
-// pages/index.js
+// pages/index.js 
 import { useState, useEffect } from 'react'
 
 export default function Dashboard() {
