@@ -1,4 +1,3 @@
-// pages/index.js 
 import { useState, useEffect } from 'react'
 
 export default function Dashboard() {
@@ -15,7 +14,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchLocks()
-    // Set up real-time updates every 30 seconds
     const interval = setInterval(fetchLocks, 30000)
     return () => clearInterval(interval)
   }, [])
@@ -123,7 +121,6 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 text-white">
       <div className="container mx-auto px-4 py-8">
-        {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent mb-2">
             Lock Performance Dashboard
@@ -133,7 +130,6 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Filters */}
         <div className="bg-black/30 backdrop-blur-sm border border-purple-500/20 rounded-xl p-6 mb-8">
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
@@ -205,7 +201,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Table */}
         <div className="bg-black/30 backdrop-blur-sm border border-purple-500/20 rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -249,7 +244,7 @@ export default function Dashboard() {
                           <span className="text-purple-400 font-medium">{lock.source}</span>
                         </td>
                         <td className="px-6 py-4">
-                          <a
+                          
                             href={lock.explorerLink}
                             target="_blank"
                             rel="noopener noreferrer"
@@ -291,7 +286,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Stats Footer */}
         <div className="mt-8 text-center text-gray-400">
           <p>Showing {filteredLocks.length} of {locks.length} locks</p>
           <p className="text-sm">Last updated: {new Date().toLocaleTimeString()}</p>
