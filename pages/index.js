@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-export default function Dashboard() {
+export default function Dashboard() { 
   const [locks, setLocks] = useState([])
   const [loading, setLoading] = useState(true)
 
