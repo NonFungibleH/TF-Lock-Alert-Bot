@@ -308,20 +308,16 @@ async function sendToDashboard(lockResult, body, tokenData) {
             usdValueAtLock: tokenData.usdValue
         };
         
-        // Determine dashboard URL
-        const dashboardUrl = process.env.VERCEL_URL 
-            ? `https://${process.env.VERCEL_URL}/api/locks`
-            : process.env.DASHBOARD_API_URL || '/api/locks';
-
-        console.log('📊 Dashboard URL:', dashboardUrl);
-        console.log('📊 Sending to dashboard:', JSON.stringify(dashboardData, null, 2));
-
-        const response = await axios.post(dashboardUrl, dashboardData, {
-            timeout: 10000,
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
+        // Use relative URL to avoid authentication issues
+const dashboardUrl = '/api/locks';
+console.log('📊 Dashboard URL:', dashboardUrl);
+console.log('📊 Sending to dashboard:', JSON.stringify(dashboardData, null, 2));
+const response = await axios.post(dashboardUrl, dashboardData, {
+    timeout: 10000,
+    headers: {
+        'Content-Type': 'application/json'
+    }
+});
         
         console.log('✅ Lock sent to dashboard:', lockResult.txHash);
         return response.data;
