@@ -6,7 +6,7 @@ const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
 
 // -----------------------------------------
-// Dashboard Integration Function
+// Enhanced Dashboard Integration Function
 // -----------------------------------------
 async function sendToDashboard(lockResult, body) {
   try {
@@ -17,25 +17,42 @@ async function sendToDashboard(lockResult, body) {
       eventName: body.logs?.find(log => log.resolvedEvent)?.resolvedEvent,
       blockNumber: body.txs?.[0]?.blockNumber,
       gasUsed: body.txs?.[0]?.gasUsed,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      
+      // Add basic token data (can be enhanced later)
+      tokenAddress: null,
+      tokenSymbol: 'UNKNOWN',
+      tokenAmount: 0,
+      tokenPriceAtLock: 0,
+      usdValueAtLock: 0
     }
     
-    // Send to dashboard API - fixed URL
-const dashboardUrl = 'https://tf-lock-alert-bot.vercel.app/api/locks'
+    // Determine dashboard URL - use environment variable or default
+    const dashboardUrl = process.env.VERCEL_URL 
+      ? `https://${process.env.VERCEL_URL}/api/locks`
+      : process.env.DASHBOARD_API_URL || '/api/locks';
 
-console.log('Dashboard URL:', dashboardUrl) // Add this debug log
+    console.log('📊 Dashboard URL:', dashboardUrl);
+    console.log('📊 Sending to dashboard:', JSON.stringify(dashboardData, null, 2));
 
-await axios.post(dashboardUrl, dashboardData, {
-  timeout: 5000,
-  headers: {
-    'Content-Type': 'application/json'
-  }
-})
+    const response = await axios.post(dashboardUrl, dashboardData, {
+      timeout: 10000, // Increased timeout
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
     
-    console.log('✅ Lock sent to dashboard:', lockResult.txHash)
+    console.log('✅ Lock sent to dashboard:', lockResult.txHash);
+    return response.data;
+    
   } catch (error) {
-    console.error('❌ Failed to send to dashboard:', error.message)
+    console.error('❌ Failed to send to dashboard:', error.message);
+    if (error.response) {
+      console.error('Dashboard response status:', error.response.status);
+      console.error('Dashboard response data:', error.response.data);
+    }
     // Don't fail the webhook if dashboard is down
+    return null;
   }
 }
 
@@ -320,7 +337,7 @@ function detectLock(body) {
 }
 
 // -----------------------------------------
-// Webhook
+// Main Webhook Handler
 // -----------------------------------------
 module.exports = async (req, res) => {
   try {
@@ -343,42 +360,56 @@ module.exports = async (req, res) => {
     
     console.log(`✅ Lock detected: Chain=${chain.name}, Source=${source}, Type=${type}, TxHash=${txHash}`);
     
+    // Send to dashboard FIRST (most important for data tracking)
+    const dashboardResult = await sendToDashboard(lockResult, body);
+    
+    // Then handle Telegram notification
+    let telegramSent = false;
+    
     // Check Telegram credentials
     console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
     console.log("📌 TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_GROUP_CHAT_ID);
     
     if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
       console.log("❌ Missing Telegram credentials");
-      return res.status(200).json({ ok: true, note: "Missing Telegram credentials" });
+    } else {
+      try {
+        // Build and send Telegram message
+        const parts = [
+          "🔒 *New Lock Created*",
+          `🌐 Chain: ${chain.name}`,
+          `📌 Type: ${type}`,
+          `🔖 Source: ${source}`,
+          `🔗 [View Tx](${explorerLink})`
+        ];
+        const message = parts.join("\n");
+        
+        await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+          chat_id: TELEGRAM_GROUP_CHAT_ID,
+          message_thread_id: TELEGRAM_TOPIC_DISCUSSION,
+          text: message,
+          parse_mode: "Markdown",
+          disable_web_page_preview: true,
+        });
+        
+        console.log("📤 Telegram message sent:", message);
+        telegramSent = true;
+        
+      } catch (telegramError) {
+        console.error("❌ Telegram sending error:", telegramError.message);
+      }
     }
     
-    // Build and send Telegram message
-    const parts = [
-      "🔒 *New Lock Created*",
-      `🌐 Chain: ${chain.name}`,
-      `📌 Type: ${type}`,
-      `🔖 Source: ${source}`,
-      `🔗 [View Tx](${explorerLink})`
-    ];
-    const message = parts.join("\n");
-    
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_GROUP_CHAT_ID,
-      message_thread_id: TELEGRAM_TOPIC_DISCUSSION,
-      text: message,
-      parse_mode: "Markdown",
-      disable_web_page_preview: true,
+    return res.status(200).json({ 
+      status: "processed",
+      lockDetected: true,
+      txHash: txHash,
+      dashboardSent: !!dashboardResult,
+      telegramSent: telegramSent
     });
     
-    console.log("📤 Telegram message sent:", message);
-    
-    // Send to dashboard
-    await sendToDashboard(lockResult, body);
-    
-    return res.status(200).json({ status: "sent" });
-    
   } catch (err) {
-    console.error("❌ Telegram webhook error:", err.message, err.stack);
+    console.error("❌ Webhook error:", err.message, err.stack);
     return res.status(200).json({ ok: true, error: err.message });
   }
 };
