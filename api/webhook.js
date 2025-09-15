@@ -80,8 +80,129 @@ async function constructLPSymbol(tokenAddress, chainId) {
     }
 }
 
-// Get token price from CoinGecko
+// Enhanced price fetching with multiple sources
 async function getTokenPrice(tokenAddress, chainId) {
+    try {
+        console.log(`💰 Fetching price for ${tokenAddress} on chain ${chainId}`);
+
+        // Try DexScreener first (best for new tokens)
+        const dexScreenerPrice = await getDexScreenerPrice(tokenAddress, chainId);
+        if (dexScreenerPrice) {
+            console.log(`✅ Price from DexScreener: ${dexScreenerPrice}`);
+            return dexScreenerPrice;
+        }
+        
+        // Try DexTools second
+        const dexToolsPrice = await getDexToolsPrice(tokenAddress, chainId);
+        if (dexToolsPrice) {
+            console.log(`✅ Price from DexTools: ${dexToolsPrice}`);
+            return dexToolsPrice;
+        }
+        
+        // Fallback to CoinGecko for established tokens
+        const coinGeckoPrice = await getCoinGeckoPrice(tokenAddress, chainId);
+        if (coinGeckoPrice) {
+            console.log(`✅ Price from CoinGecko: ${coinGeckoPrice}`);
+            return coinGeckoPrice;
+        }
+        
+        console.log(`❌ No price data found for ${tokenAddress}`);
+        return null;
+        
+    } catch (error) {
+        console.error(`❌ Error fetching price for ${tokenAddress}:`, error.message);
+        return null;
+    }
+}
+
+// DexScreener API - best for new tokens
+async function getDexScreenerPrice(tokenAddress, chainId) {
+    try {
+        const chainMap = {
+            '1': 'ethereum',
+            '56': 'bsc',
+            '137': 'polygon',
+            '8453': 'base'
+        };
+
+        const chain = chainMap[chainId];
+        if (!chain) return null;
+
+        console.log(`🔍 Checking DexScreener for ${tokenAddress} on ${chain}`);
+
+        const response = await axios.get(
+            `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`,
+            { timeout: 5000 }
+        );
+
+        // DexScreener returns multiple pairs, get the one with highest liquidity
+        const pairs = response.data?.pairs?.filter(pair => 
+            pair.chainId === chain && pair.priceUsd
+        );
+
+        if (pairs && pairs.length > 0) {
+            // Sort by liquidity and take the highest
+            const bestPair = pairs.sort((a, b) => 
+                parseFloat(b.liquidity?.usd || 0) - parseFloat(a.liquidity?.usd || 0)
+            )[0];
+            
+            console.log(`📊 DexScreener found pair: ${bestPair.baseToken?.symbol}/${bestPair.quoteToken?.symbol}`);
+            console.log(`📊 Liquidity: ${bestPair.liquidity?.usd || 'N/A'}`);
+            
+            return parseFloat(bestPair.priceUsd);
+        }
+
+        return null;
+        
+    } catch (error) {
+        console.log(`No DexScreener data for ${tokenAddress}: ${error.message}`);
+        return null;
+    }
+}
+
+// DexTools API - second option
+async function getDexToolsPrice(tokenAddress, chainId) {
+    try {
+        const chainMap = {
+            '1': 'ether',
+            '56': 'bnb',
+            '137': 'polygon',
+            '8453': 'base'
+        };
+
+        const chain = chainMap[chainId];
+        if (!chain) return null;
+
+        console.log(`🔍 Checking DexTools for ${tokenAddress} on ${chain}`);
+
+        // DexTools free API endpoint
+        const response = await axios.get(
+            `https://www.dextools.io/shared/data/pair?chain=${chain}&address=${tokenAddress}`,
+            { 
+                timeout: 5000,
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (compatible; DexBot/1.0)'
+                }
+            }
+        );
+
+        if (response.data?.data?.price) {
+            const price = parseFloat(response.data.data.price);
+            console.log(`📊 DexTools found price: ${price}`);
+            return price;
+        }
+
+        return null;
+        
+    } catch (error) {
+        console.log(`No DexTools data for ${tokenAddress}: ${error.message}`);
+        return null;
+    }
+}
+
+// CoinGecko API - fallback for established tokens
+async function getCoinGeckoPrice(tokenAddress, chainId) {
     try {
         const platformMap = {
             '1': 'ethereum',
@@ -91,12 +212,9 @@ async function getTokenPrice(tokenAddress, chainId) {
         };
 
         const platform = platformMap[chainId];
-        if (!platform) {
-            console.log(`❌ Unsupported chain ID for pricing: ${chainId}`);
-            return null;
-        }
+        if (!platform) return null;
 
-        console.log(`💰 Fetching price for ${tokenAddress} on ${platform}`);
+        console.log(`🔍 Checking CoinGecko for ${tokenAddress} on ${platform}`);
 
         const response = await axios.get(
             `https://api.coingecko.com/api/v3/simple/token_price/${platform}`,
@@ -112,15 +230,14 @@ async function getTokenPrice(tokenAddress, chainId) {
         const price = response.data[tokenAddress.toLowerCase()]?.usd;
         
         if (price) {
-            console.log(`✅ Price found: $${price}`);
+            console.log(`📊 CoinGecko found price: ${price}`);
             return price;
-        } else {
-            console.log(`❌ No price data for token ${tokenAddress}`);
-            return null;
         }
+
+        return null;
         
     } catch (error) {
-        console.error(`❌ Error fetching price for ${tokenAddress}:`, error.message);
+        console.log(`No CoinGecko data for ${tokenAddress}: ${error.message}`);
         return null;
     }
 }
