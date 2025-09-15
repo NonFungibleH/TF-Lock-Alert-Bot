@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TF Lock Alerts Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 2.2rem;
+            font-weight: 700;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-3px);
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .controls {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 25px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .table-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .table-header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 20px;
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+            font-size: 0.9rem;
+        }
+
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #333;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 0.8rem;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .chain-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: white;
+        }
+
+        .chain-ethereum { background: #627eea; }
+        .chain-bnb-chain { background: #f3ba2f; color: #333; }
+        .chain-polygon { background: #8247e5; }
+        .chain-base { background: #0052ff; }
+
+        .platform-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            background: #e9ecef;
+            color: #495057;
+        }
+
+        .tx-link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+
+        .tx-link:hover {
+            text-decoration: underline;
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .loading::before {
+            content: '';
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ccc;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px;
+            text-align: center;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 { font-size: 1.8rem; }
+            .controls { flex-direction: column; align-items: stretch; }
+            table { font-size: 0.8rem; }
+            th, td { padding: 8px 6px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔒 TF Lock Alerts Dashboard</h1>
+            <p>Real-time monitoring of token locks across multiple platforms and chains</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="totalLocks">-</div>
+                <div class="stat-label">Total Locks (7 days)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalUsdLocked">-</div>
+                <div class="stat-label">Total USD Locked</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="uniquePlatforms">-</div>
+                <div class="stat-label">Platforms</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="uniqueChains">-</div>
+                <div class="stat-label">Chains</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Data</button>
+            <div style="margin-left: auto; color: #666; font-size: 0.9rem;">
+                Last updated: <span id="lastUpdated">-</span>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <div class="table-header">
+                📊 Recent Lock Events
+            </div>
+            <div id="tableContent">
+                <div class="loading">Loading lock data...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Update this to match your Vercel deployment URL
+        const API_BASE = '/api/locks';
+
+        async function fetchLockData() {
+            const response = await fetch(API_BASE);
+            if (!response.ok) throw new Error('Failed to fetch data');
+            return await response.json();
+        }
+
+        async function fetchStats() {
+            const response = await fetch(`${API_BASE}?action=stats`);
+            if (!response.ok) throw new Error('Failed to fetch stats');
+            return await response.json();
+        }
+
+        function formatUSD(amount) {
+            if (!amount) return '$0';
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            }).format(amount);
+        }
+
+        function formatTxHash(hash) {
+            if (!hash) return 'N/A';
+            return `${hash.slice(0, 6)}...${hash.slice(-4)}`;
+        }
+
+        function getChainClass(chainName) {
+            return `chain-${chainName.toLowerCase().replace(' ', '-')}`;
+        }
+
+        function formatTimeAgo(timestamp) {
+            const now = Date.now();
+            const time = new Date(timestamp * 1000).getTime();
+            const diff = Math.floor((now - time) / 1000);
+
+            if (diff < 60) return `${diff}s ago`;
+            if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+            if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+            return `${Math.floor(diff / 86400)}d ago`;
+        }
+
+        function renderTable(locks) {
+            if (!locks || locks.length === 0) {
+                return '<div class="no-data">No lock events found in the last 7 days</div>';
+            }
+
+            const tableHTML = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Chain</th>
+                            <th>Platform</th>
+                            <th>Lock Type</th>
+                            <th>Token</th>
+                            <th>USD Value</th>
+                            <th>Transaction</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${locks.map(lock => `
+                            <tr>
+                                <td>${formatTimeAgo(lock.created_at)}</td>
+                                <td>
+                                    <span class="chain-badge ${getChainClass(lock.chain_name)}">${lock.chain_name}</span>
+                                </td>
+                                <td>
+                                    <span class="platform-badge">${lock.platform}</span>
+                                </td>
+                                <td>${lock.lock_type}</td>
+                                <td>
+                                    ${lock.token_symbol || 'Unknown'}
+                                    ${lock.token_amount ? `<br><small>${parseFloat(lock.token_amount).toLocaleString()} tokens</small>` : ''}
+                                </td>
+                                <td>${formatUSD(lock.usd_value_at_lock)}</td>
+                                <td>
+                                    <a href="${lock.explorer_link}" target="_blank" class="tx-link">
+                                        ${formatTxHash(lock.transaction_id)}
+                                    </a>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+            
+            return tableHTML;
+        }
+
+        async function refreshData() {
+            const refreshBtn = document.querySelector('.refresh-btn');
+            const tableContent = document.getElementById('tableContent');
+            
+            try {
+                refreshBtn.disabled = true;
+                refreshBtn.textContent = '🔄 Loading...';
+                
+                tableContent.innerHTML = '<div class="loading">Loading lock data...</div>';
+                
+                const [locks, stats] = await Promise.all([
+                    fetchLockData(),
+                    fetchStats()
+                ]);
+                
+                // Update stats
+                if (stats) {
+                    document.getElementById('totalLocks').textContent = stats.total_locks || 0;
+                    document.getElementById('totalUsdLocked').textContent = formatUSD(stats.total_usd_locked);
+                    document.getElementById('uniquePlatforms').textContent = stats.unique_platforms || 0;
+                    document.getElementById('uniqueChains').textContent = stats.unique_chains || 0;
+                }
+                
+                // Update table
+                tableContent.innerHTML = renderTable(locks);
+                
+                // Update timestamp
+                document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString();
+                
+            } catch (error) {
+                tableContent.innerHTML = `
+                    <div class="error">
+                        ❌ Error loading data: ${error.message}
+                    </div>
+                `;
+            } finally {
+                refreshBtn.disabled = false;
+                refreshBtn.textContent = '🔄 Refresh Data';
+            }
+        }
+
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshData();
+            
+            // Auto-refresh every 30 seconds
+            setInterval(refreshData, 30000);
+        });
+    </script>
+</body>
+</html>
