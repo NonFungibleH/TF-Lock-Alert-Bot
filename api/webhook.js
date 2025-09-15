@@ -9,18 +9,74 @@ const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
 // Enhanced Token Data Extraction Functions
 // -----------------------------------------
 
-// Get token symbol from contract (simplified version)
-async function getTokenSymbol(tokenAddress, chainName) {
+// Enhanced token symbol fetching using multiple methods
+async function getTokenSymbolFromContract(tokenAddress, chainId) {
     try {
-        console.log(`🏷️ Getting symbol for token ${tokenAddress} on ${chainName}`);
+        console.log(`🏷️ Fetching symbol for ${tokenAddress} on chain ${chainId}`);
         
-        // For now, returning a generic symbol
-        // TODO: Integrate with Moralis, Alchemy, or direct contract calls
-        return 'TOKEN';
+        // Method 1: Try CoinGecko token info API
+        const coinGeckoSymbol = await getSymbolFromCoinGecko(tokenAddress, chainId);
+        if (coinGeckoSymbol) {
+            console.log(`✅ Symbol from CoinGecko: ${coinGeckoSymbol}`);
+            return coinGeckoSymbol;
+        }
+        
+        // Method 2: For LP tokens, try to construct symbol
+        const lpSymbol = await constructLPSymbol(tokenAddress, chainId);
+        if (lpSymbol) {
+            console.log(`✅ Constructed LP symbol: ${lpSymbol}`);
+            return lpSymbol;
+        }
+        
+        console.log(`❌ Could not get symbol for ${tokenAddress}`);
+        return 'UNKNOWN';
         
     } catch (error) {
         console.error('❌ Error getting token symbol:', error);
         return 'UNKNOWN';
+    }
+}
+
+// Get symbol from CoinGecko
+async function getSymbolFromCoinGecko(tokenAddress, chainId) {
+    try {
+        const platformMap = {
+            '1': 'ethereum',
+            '56': 'binance-smart-chain',
+            '137': 'polygon-pos',
+            '8453': 'base'
+        };
+        
+        const platform = platformMap[chainId];
+        if (!platform) return null;
+        
+        const response = await axios.get(
+            `https://api.coingecko.com/api/v3/coins/${platform}/contract/${tokenAddress}`,
+            { timeout: 5000 }
+        );
+        
+        return response.data?.symbol?.toUpperCase();
+        
+    } catch (error) {
+        console.log(`No CoinGecko data for ${tokenAddress}`);
+        return null;
+    }
+}
+
+// Construct LP token symbol
+async function constructLPSymbol(tokenAddress, chainId) {
+    try {
+        // This is a simplified version - in practice you'd need to:
+        // 1. Check if it's an LP token by calling pair contract
+        // 2. Get token0 and token1 addresses
+        // 3. Get symbols for both tokens
+        // 4. Construct "TOKEN0/TOKEN1 LP"
+        
+        // For now, return a generic LP symbol
+        return 'LP-TOKEN';
+        
+    } catch (error) {
+        return null;
     }
 }
 
@@ -79,8 +135,151 @@ function getChainIdFromName(chainName) {
     return chainMap[chainName] || '1';
 }
 
-// Team Finance token extraction
-async function extractTeamFinanceData(lockLog, lockResult) {
+// Decode onNewLock event data
+async function decodeOnNewLockEvent(lockLog, eventInfo, lockResult) {
+    const tokenData = {
+        address: null,
+        symbol: 'UNKNOWN',
+        amount: 0,
+        priceAtLock: 0,
+        usdValue: 0
+    };
+
+    try {
+        // onNewLock(uint256 lockID, address lpToken, address owner, uint256 amount, uint256 lockDate, uint256 unlockDate, uint16 countryCode)
+        const data = lockLog.data.slice(2); // Remove 0x prefix
+        const chunks = [];
+        
+        // Split into 32-byte chunks
+        for (let i = 0; i < data.length; i += 64) {
+            chunks.push('0x' + data.slice(i, i + 64));
+        }
+        
+        console.log('📊 onNewLock data chunks:', chunks);
+        
+        if (chunks.length >= 6) {
+            // Extract data based on event signature
+            const lockID = parseInt(chunks[0], 16);
+            const lpTokenHex = chunks[1];
+            const ownerHex = chunks[2];
+            const amountHex = chunks[3];
+            const lockDateHex = chunks[4];
+            const unlockDateHex = chunks[5];
+            
+            // Extract LP token address (remove padding)
+            tokenData.address = '0x' + lpTokenHex.slice(-40).toLowerCase();
+            
+            // Extract amount (convert from wei, assuming 18 decimals)
+            const amountWei = BigInt(amountHex);
+            tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+            
+            console.log('🎯 Decoded onNewLock:');
+            console.log('  - Lock ID:', lockID);
+            console.log('  - LP Token:', tokenData.address);
+            console.log('  - Amount:', tokenData.amount);
+            console.log('  - Lock Date:', new Date(parseInt(lockDateHex, 16) * 1000));
+            console.log('  - Unlock Date:', new Date(parseInt(unlockDateHex, 16) * 1000));
+        }
+        
+    } catch (error) {
+        console.error('❌ Error decoding onNewLock:', error);
+    }
+    
+    return tokenData;
+}
+
+// Decode onDeposit event data
+async function decodeOnDepositEvent(lockLog, eventInfo, lockResult) {
+    const tokenData = {
+        address: null,
+        symbol: 'UNKNOWN',
+        amount: 0,
+        priceAtLock: 0,
+        usdValue: 0
+    };
+
+    try {
+        // onDeposit(address lpToken, address user, uint256 amount, uint256 lockDate, uint256 unlockDate)
+        const data = lockLog.data.slice(2);
+        const chunks = [];
+        
+        for (let i = 0; i < data.length; i += 64) {
+            chunks.push('0x' + data.slice(i, i + 64));
+        }
+        
+        console.log('📊 onDeposit data chunks:', chunks);
+        
+        if (chunks.length >= 5) {
+            const lpTokenHex = chunks[0];
+            const userHex = chunks[1];
+            const amountHex = chunks[2];
+            const lockDateHex = chunks[3];
+            const unlockDateHex = chunks[4];
+            
+            tokenData.address = '0x' + lpTokenHex.slice(-40).toLowerCase();
+            
+            const amountWei = BigInt(amountHex);
+            tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+            
+            console.log('🎯 Decoded onDeposit:');
+            console.log('  - LP Token:', tokenData.address);
+            console.log('  - User:', '0x' + userHex.slice(-40));
+            console.log('  - Amount:', tokenData.amount);
+        }
+        
+    } catch (error) {
+        console.error('❌ Error decoding onDeposit:', error);
+    }
+    
+    return tokenData;
+}
+
+// Decode Team Finance events
+async function decodeTeamFinanceEvent(lockLog, eventInfo, lockResult) {
+    const tokenData = {
+        address: null,
+        symbol: 'UNKNOWN',
+        amount: 0,
+        priceAtLock: 0,
+        usdValue: 0
+    };
+
+    try {
+        const data = lockLog.data.slice(2);
+        const chunks = [];
+        
+        for (let i = 0; i < data.length; i += 64) {
+            chunks.push('0x' + data.slice(i, i + 64));
+        }
+        
+        console.log('📊 Team Finance chunks:', chunks);
+        
+        // Parse based on event inputs
+        let chunkIndex = 0;
+        for (const input of eventInfo.inputs) {
+            if (!input.indexed && chunkIndex < chunks.length) {
+                const chunk = chunks[chunkIndex];
+                
+                if (input.name === 'tokenAddress' || input.name === 'token') {
+                    tokenData.address = '0x' + chunk.slice(-40).toLowerCase();
+                } else if (input.name === 'amount' || input.name === 'value') {
+                    const amountWei = BigInt(chunk);
+                    tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+                }
+                
+                chunkIndex++;
+            }
+        }
+        
+    } catch (error) {
+        console.error('❌ Error decoding Team Finance event:', error);
+    }
+    
+    return tokenData;
+}
+
+// Enhanced Team Finance extraction
+async function extractTeamFinanceData(lockLog, lockResult, eventMap) {
     const tokenData = {
         address: null,
         symbol: 'UNKNOWN',
@@ -92,18 +291,15 @@ async function extractTeamFinanceData(lockLog, lockResult) {
     try {
         console.log('🏢 Extracting Team Finance data');
         
-        if (lockLog.decoded && lockLog.decoded.inputs) {
-            const inputs = lockLog.decoded.inputs;
-            console.log('📋 Team Finance decoded inputs:', inputs);
-
-            for (const input of inputs) {
-                if (input.name === 'token' && input.value) {
-                    tokenData.address = input.value.toLowerCase();
-                    console.log('🎯 Found token address:', tokenData.address);
-                }
-                if ((input.name === 'amount' || input.name === 'value') && input.value) {
-                    tokenData.amount = parseFloat(input.value) / Math.pow(10, 18);
-                    console.log('📊 Found token amount:', tokenData.amount);
+        // Try to decode using event definition
+        if (eventMap[lockLog.topic0]) {
+            const eventInfo = eventMap[lockLog.topic0];
+            console.log('📋 Team Finance event:', eventInfo.name);
+            
+            if (eventInfo.name === 'Deposit' || eventInfo.name === 'DepositNFT') {
+                const decodedData = await decodeTeamFinanceEvent(lockLog, eventInfo, lockResult);
+                if (decodedData.address) {
+                    Object.assign(tokenData, decodedData);
                 }
             }
         }
@@ -112,13 +308,29 @@ async function extractTeamFinanceData(lockLog, lockResult) {
         if (!tokenData.address && lockLog.topics && lockLog.topics.length > 1) {
             const tokenAddressTopic = lockLog.topics[1];
             if (tokenAddressTopic && tokenAddressTopic.startsWith('0x')) {
-                tokenData.address = '0x' + tokenAddressTopic.slice(-40);
-                console.log('🎯 Extracted token from topics:', tokenData.address);
+                tokenData.address = '0x' + tokenAddressTopic.slice(-40).toLowerCase();
+                console.log('🎯 Team Finance token from topics:', tokenData.address);
             }
         }
 
+        // Get token info if we have an address
         if (tokenData.address) {
-            tokenData.symbol = await getTokenSymbol(tokenData.address, lockResult.chain.name);
+            const chainId = getChainIdFromName(lockResult.chain.name);
+            const [symbol, price] = await Promise.all([
+                getTokenSymbolFromContract(tokenData.address, chainId),
+                getTokenPrice(tokenData.address, chainId)
+            ]);
+            
+            if (symbol && symbol !== 'UNKNOWN') {
+                tokenData.symbol = symbol;
+            }
+            
+            if (price) {
+                tokenData.priceAtLock = price;
+                if (tokenData.amount > 0) {
+                    tokenData.usdValue = tokenData.amount * price;
+                }
+            }
         }
 
     } catch (error) {
@@ -128,7 +340,7 @@ async function extractTeamFinanceData(lockLog, lockResult) {
     return tokenData;
 }
 
-// UNCX token extraction
+// Enhanced UNCX token extraction with proper data decoding
 async function extractUNCXData(lockLog, lockResult, eventMap) {
     const tokenData = {
         address: null,
@@ -142,36 +354,21 @@ async function extractUNCXData(lockLog, lockResult, eventMap) {
         console.log('🔒 Extracting UNCX data');
         console.log('🔒 Raw log data:', JSON.stringify(lockLog, null, 2));
         
-        // Try to decode using the event map first
+        // Get the event definition from the event map
         if (eventMap[lockLog.topic0]) {
             const eventInfo = eventMap[lockLog.topic0];
             console.log('📋 Found event definition:', eventInfo);
             
-            // Simple decoding for onNewLock event
+            // Decode based on event type
             if (eventInfo.name === 'onNewLock' && lockLog.data) {
-                try {
-                    // Remove 0x prefix and split into 32-byte chunks
-                    const data = lockLog.data.slice(2);
-                    const chunks = [];
-                    for (let i = 0; i < data.length; i += 64) {
-                        chunks.push('0x' + data.slice(i, i + 64));
-                    }
-                    
-                    console.log('📊 Data chunks:', chunks);
-                    
-                    // For onNewLock: lockID, lpToken, owner, amount, lockDate, unlockDate, countryCode
-                    if (chunks.length >= 6) {
-                        const lpTokenHex = chunks[1];
-                        tokenData.address = '0x' + lpTokenHex.slice(-40);
-                        
-                        const amountHex = chunks[3];
-                        tokenData.amount = parseInt(amountHex, 16) / Math.pow(10, 18);
-                        
-                        console.log('🎯 Decoded LP token address:', tokenData.address);
-                        console.log('📊 Decoded amount:', tokenData.amount);
-                    }
-                } catch (decodeError) {
-                    console.error('❌ Error decoding UNCX data:', decodeError);
+                const decodedData = await decodeOnNewLockEvent(lockLog, eventInfo, lockResult);
+                if (decodedData.address) {
+                    Object.assign(tokenData, decodedData);
+                }
+            } else if (eventInfo.name === 'onDeposit' && lockLog.data) {
+                const decodedData = await decodeOnDepositEvent(lockLog, eventInfo, lockResult);
+                if (decodedData.address) {
+                    Object.assign(tokenData, decodedData);
                 }
             }
         }
@@ -182,13 +379,33 @@ async function extractUNCXData(lockLog, lockResult, eventMap) {
             const data = lockLog.data.slice(2);
             if (data.length >= 128) {
                 const lpTokenSlot = '0x' + data.slice(64, 128);
-                tokenData.address = '0x' + lpTokenSlot.slice(-40);
+                tokenData.address = '0x' + lpTokenSlot.slice(-40).toLowerCase();
                 console.log('🎯 Fallback LP token extraction:', tokenData.address);
             }
         }
 
+        // If we have a token address, get additional info
         if (tokenData.address) {
-            tokenData.symbol = await getTokenSymbol(tokenData.address, lockResult.chain.name) || 'LP-TOKEN';
+            const chainId = getChainIdFromName(lockResult.chain.name);
+            
+            // Try to get token symbol and price
+            const [symbol, price] = await Promise.all([
+                getTokenSymbolFromContract(tokenData.address, chainId),
+                getTokenPrice(tokenData.address, chainId)
+            ]);
+            
+            if (symbol && symbol !== 'UNKNOWN') {
+                tokenData.symbol = symbol;
+            } else {
+                tokenData.symbol = 'LP-TOKEN';
+            }
+            
+            if (price) {
+                tokenData.priceAtLock = price;
+                if (tokenData.amount > 0) {
+                    tokenData.usdValue = tokenData.amount * price;
+                }
+            }
         }
 
     } catch (error) {
@@ -228,7 +445,22 @@ async function extractGoPlusData(lockLog, lockResult) {
         }
 
         if (tokenData.address) {
-            tokenData.symbol = await getTokenSymbol(tokenData.address, lockResult.chain.name);
+            const chainId = getChainIdFromName(lockResult.chain.name);
+            const [symbol, price] = await Promise.all([
+                getTokenSymbolFromContract(tokenData.address, chainId),
+                getTokenPrice(tokenData.address, chainId)
+            ]);
+            
+            if (symbol) {
+                tokenData.symbol = symbol;
+            }
+            
+            if (price) {
+                tokenData.priceAtLock = price;
+                if (tokenData.amount > 0) {
+                    tokenData.usdValue = tokenData.amount * price;
+                }
+            }
         }
 
     } catch (error) {
@@ -270,25 +502,11 @@ async function extractTokenDataFromLogs(body, lockResult, eventMap) {
         const contractAddr = (lockLog.address || "").toLowerCase();
         
         if (TEAM_FINANCE_CONTRACTS.has(contractAddr)) {
-            tokenData = await extractTeamFinanceData(lockLog, lockResult);
+            tokenData = await extractTeamFinanceData(lockLog, lockResult, eventMap);
         } else if (UNCX_CONTRACTS[contractAddr]) {
             tokenData = await extractUNCXData(lockLog, lockResult, eventMap);
         } else if (GOPLUS_CONTRACTS[contractAddr]) {
             tokenData = await extractGoPlusData(lockLog, lockResult);
-        }
-
-        // If we have a token address, get current price
-        if (tokenData.address) {
-            const chainId = getChainIdFromName(lockResult.chain.name);
-            const currentPrice = await getTokenPrice(tokenData.address, chainId);
-            
-            if (currentPrice) {
-                tokenData.priceAtLock = currentPrice;
-                if (tokenData.amount > 0) {
-                    tokenData.usdValue = tokenData.amount * currentPrice;
-                }
-                console.log(`💰 Token price fetched: $${currentPrice} for ${tokenData.symbol}`);
-            }
         }
 
         console.log('🎯 Final token data:', tokenData);
@@ -650,11 +868,11 @@ module.exports = async (req, res) => {
                     }
                     
                     if (tokenData.priceAtLock > 0) {
-                        parts.push(`💵 Price: $${tokenData.priceAtLock.toFixed(6)}`);
+                        parts.push(`💵 Price: ${tokenData.priceAtLock.toFixed(6)}`);
                     }
                     
                     if (tokenData.usdValue > 0) {
-                        parts.push(`💸 USD Value: $${tokenData.usdValue.toLocaleString()}`);
+                        parts.push(`💸 USD Value: ${tokenData.usdValue.toLocaleString()}`);
                     }
                 }
 
