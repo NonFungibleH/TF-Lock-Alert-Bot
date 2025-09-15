@@ -129,7 +129,7 @@ async function extractTeamFinanceData(lockLog, lockResult) {
 }
 
 // UNCX token extraction
-async function extractUNCXData(lockLog, lockResult) {
+async function extractUNCXData(lockLog, lockResult, eventMap) {
     const tokenData = {
         address: null,
         symbol: 'UNKNOWN',
@@ -140,29 +140,50 @@ async function extractUNCXData(lockLog, lockResult) {
 
     try {
         console.log('🔒 Extracting UNCX data');
+        console.log('🔒 Raw log data:', JSON.stringify(lockLog, null, 2));
         
-        if (lockLog.decoded && lockLog.decoded.inputs) {
-            const inputs = lockLog.decoded.inputs;
-            console.log('📋 UNCX decoded inputs:', inputs);
-
-            for (const input of inputs) {
-                if ((input.name === 'lpToken' || input.name === 'token') && input.value) {
-                    tokenData.address = input.value.toLowerCase();
-                    console.log('🎯 Found LP token address:', tokenData.address);
-                }
-                if (input.name === 'amount' && input.value) {
-                    tokenData.amount = parseFloat(input.value) / Math.pow(10, 18);
-                    console.log('📊 Found LP amount:', tokenData.amount);
+        // Try to decode using the event map first
+        if (eventMap[lockLog.topic0]) {
+            const eventInfo = eventMap[lockLog.topic0];
+            console.log('📋 Found event definition:', eventInfo);
+            
+            // Simple decoding for onNewLock event
+            if (eventInfo.name === 'onNewLock' && lockLog.data) {
+                try {
+                    // Remove 0x prefix and split into 32-byte chunks
+                    const data = lockLog.data.slice(2);
+                    const chunks = [];
+                    for (let i = 0; i < data.length; i += 64) {
+                        chunks.push('0x' + data.slice(i, i + 64));
+                    }
+                    
+                    console.log('📊 Data chunks:', chunks);
+                    
+                    // For onNewLock: lockID, lpToken, owner, amount, lockDate, unlockDate, countryCode
+                    if (chunks.length >= 6) {
+                        const lpTokenHex = chunks[1];
+                        tokenData.address = '0x' + lpTokenHex.slice(-40);
+                        
+                        const amountHex = chunks[3];
+                        tokenData.amount = parseInt(amountHex, 16) / Math.pow(10, 18);
+                        
+                        console.log('🎯 Decoded LP token address:', tokenData.address);
+                        console.log('📊 Decoded amount:', tokenData.amount);
+                    }
+                } catch (decodeError) {
+                    console.error('❌ Error decoding UNCX data:', decodeError);
                 }
             }
         }
 
-        // Fallback to topics parsing
-        if (!tokenData.address && lockLog.topics && lockLog.topics.length > 1) {
-            const tokenAddressTopic = lockLog.topics[1];
-            if (tokenAddressTopic && tokenAddressTopic.startsWith('0x')) {
-                tokenData.address = '0x' + tokenAddressTopic.slice(-40);
-                console.log('🎯 Extracted LP token from topics:', tokenData.address);
+        // Fallback to basic data extraction if decoding failed
+        if (!tokenData.address && lockLog.data) {
+            // For UNCX, LP token is typically in the second 32-byte slot
+            const data = lockLog.data.slice(2);
+            if (data.length >= 128) {
+                const lpTokenSlot = '0x' + data.slice(64, 128);
+                tokenData.address = '0x' + lpTokenSlot.slice(-40);
+                console.log('🎯 Fallback LP token extraction:', tokenData.address);
             }
         }
 
@@ -218,7 +239,7 @@ async function extractGoPlusData(lockLog, lockResult) {
 }
 
 // Enhanced token data extraction main function
-async function extractTokenDataFromLogs(body, lockResult) {
+async function extractTokenDataFromLogs(body, lockResult, eventMap) {
     const logs = Array.isArray(body.logs) ? body.logs : [];
     
     let tokenData = {
@@ -232,17 +253,10 @@ async function extractTokenDataFromLogs(body, lockResult) {
     try {
         console.log('🔍 Extracting token data from', logs.length, 'logs');
 
-        // Find the specific lock log that triggered the alert
+        // Find the lock log by matching the contract address from the detection
         const lockLog = logs.find(log => {
             const addr = (log.address || "").toLowerCase();
-            const eventName = log.name || log.eventName || log.decoded?.name || log.decoded?.event;
-            
-            const isKnownLocker = KNOWN_LOCKERS.has(addr);
-            const isLockEvent = LOCK_EVENTS.has(eventName);
-            
-            console.log(`🔍 Checking log: addr=${addr}, event=${eventName}, known=${isKnownLocker}, lockEvent=${isLockEvent}`);
-            
-            return isKnownLocker && isLockEvent;
+            return KNOWN_LOCKERS.has(addr);
         });
 
         if (!lockLog) {
@@ -250,7 +264,7 @@ async function extractTokenDataFromLogs(body, lockResult) {
             return tokenData;
         }
 
-        console.log('✅ Found lock log:', JSON.stringify(lockLog, null, 2));
+        console.log('✅ Found lock log for extraction:', JSON.stringify(lockLog, null, 2));
 
         // Extract token data based on platform
         const contractAddr = (lockLog.address || "").toLowerCase();
@@ -258,7 +272,7 @@ async function extractTokenDataFromLogs(body, lockResult) {
         if (TEAM_FINANCE_CONTRACTS.has(contractAddr)) {
             tokenData = await extractTeamFinanceData(lockLog, lockResult);
         } else if (UNCX_CONTRACTS[contractAddr]) {
-            tokenData = await extractUNCXData(lockLog, lockResult);
+            tokenData = await extractUNCXData(lockLog, lockResult, eventMap);
         } else if (GOPLUS_CONTRACTS[contractAddr]) {
             tokenData = await extractGoPlusData(lockLog, lockResult);
         }
@@ -289,13 +303,13 @@ async function extractTokenDataFromLogs(body, lockResult) {
 // -----------------------------------------
 // Enhanced Dashboard Integration Function
 // -----------------------------------------
-async function sendToDashboard(lockResult, body, tokenData) {
+async function sendToDashboard(lockResult, body, tokenData, req) {
     try {
         const dashboardData = {
             ...lockResult,
             // Extract additional data from the webhook body if available
-            contractAddress: body.logs?.find(log => log.resolvedEvent)?.address,
-            eventName: body.logs?.find(log => log.resolvedEvent)?.resolvedEvent,
+            contractAddress: body.logs?.find(log => log.address)?.address,
+            eventName: 'Lock Created', // Simplified event name
             blockNumber: body.txs?.[0]?.blockNumber,
             gasUsed: body.txs?.[0]?.gasUsed,
             timestamp: new Date().toISOString(),
@@ -308,16 +322,18 @@ async function sendToDashboard(lockResult, body, tokenData) {
             usdValueAtLock: tokenData.usdValue
         };
         
-        // Use relative URL to avoid authentication issues
-const dashboardUrl = '/api/locks';
-console.log('📊 Dashboard URL:', dashboardUrl);
-console.log('📊 Sending to dashboard:', JSON.stringify(dashboardData, null, 2));
-const response = await axios.post(dashboardUrl, dashboardData, {
-    timeout: 10000,
-    headers: {
-        'Content-Type': 'application/json'
-    }
-});
+        // Fixed dashboard URL using request host
+        const dashboardUrl = `https://${req.headers.host}/api/locks`;
+        
+        console.log('📊 Dashboard URL:', dashboardUrl);
+        console.log('📊 Sending to dashboard:', JSON.stringify(dashboardData, null, 2));
+
+        const response = await axios.post(dashboardUrl, dashboardData, {
+            timeout: 10000,
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
         
         console.log('✅ Lock sent to dashboard:', lockResult.txHash);
         return response.data;
@@ -575,7 +591,7 @@ function detectLock(body) {
 
     console.log(`🎯 Final result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
 
-    return { chain, type, source, explorerLink, txHash };
+    return { chain, type, source, explorerLink, txHash, eventMap };
 }
 
 // -----------------------------------------
@@ -597,16 +613,16 @@ module.exports = async (req, res) => {
             return res.status(200).json({ ok: true, note: "No lock event detected" });
         }
         
-        const { chain, type, source, explorerLink, txHash } = lockResult;
+        const { chain, type, source, explorerLink, txHash, eventMap } = lockResult;
         
         console.log(`✅ Lock detected: Chain=${chain.name}, Source=${source}, Type=${type}, TxHash=${txHash}`);
         
-        // Extract enhanced token data
-        const tokenData = await extractTokenDataFromLogs(body, lockResult);
+        // Extract enhanced token data with eventMap
+        const tokenData = await extractTokenDataFromLogs(body, lockResult, eventMap);
         console.log('💎 Enhanced token data extracted:', tokenData);
         
-        // Send to dashboard with enhanced data
-        const dashboardResult = await sendToDashboard(lockResult, body, tokenData);
+        // Send to dashboard with enhanced data and request object
+        const dashboardResult = await sendToDashboard(lockResult, body, tokenData, req);
         
         // Handle Telegram notification
         let telegramSent = false;
