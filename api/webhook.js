@@ -298,32 +298,105 @@ async function extractTeamFinanceDataDebug(lockLog, lockResult, eventMap) {
             const eventInfo = eventMap[lockLog.topic0];
             console.log('📋 Found event definition:', eventInfo);
             
-            if (lockLog.data) {
-                console.log('📊 Raw data length:', lockLog.data.length);
-                console.log('📊 Raw data:', lockLog.data);
+            // For Team Finance events, check if it's DepositNFT or Deposit
+            if (eventInfo.name === 'DepositNFT') {
+                console.log('🎯 Processing DepositNFT - token address should be in topic1');
                 
-                const data = lockLog.data.slice(2);
-                const chunks = [];
-                
-                for (let i = 0; i < data.length; i += 64) {
-                    chunks.push('0x' + data.slice(i, i + 64));
-                }
-                
-                console.log('📊 Data chunks:', chunks);
-                
-                // Try to find token address in chunks
-                chunks.forEach((chunk, index) => {
-                    if (chunk.length === 66) {
-                        const possibleAddress = '0x' + chunk.slice(-40).toLowerCase();
-                        console.log(`🔍 Chunk[${index}] possible address: ${possibleAddress}`);
+                // For DepositNFT: topic1 = tokenAddress (indexed), topic2 = withdrawalAddress (indexed)
+                if (lockLog.topic1) {
+                    const tokenAddress = '0x' + lockLog.topic1.slice(-40).toLowerCase();
+                    console.log(`✅ DepositNFT token address from topic1: ${tokenAddress}`);
+                    
+                    if (tokenAddress !== '0x0000000000000000000000000000000000000000') {
+                        tokenData.address = tokenAddress;
                         
-                        if (possibleAddress !== '0x0000000000000000000000000000000000000000' && 
-                            possibleAddress.match(/^0x[a-f0-9]{40}$/)) {
-                            console.log(`✅ Valid address found in chunk[${index}]: ${possibleAddress}`);
-                            if (!tokenData.address) tokenData.address = possibleAddress;
+                        // Also extract amount from data chunks if available
+                        if (lockLog.data) {
+                            const data = lockLog.data.slice(2);
+                            const chunks = [];
+                            for (let i = 0; i < data.length; i += 64) {
+                                chunks.push('0x' + data.slice(i, i + 64));
+                            }
+                            console.log('📊 DepositNFT data chunks:', chunks);
+                            
+                            // Chunk[1] should be the amount for DepositNFT
+                            if (chunks.length > 1) {
+                                try {
+                                    const amountWei = BigInt(chunks[1]);
+                                    tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+                                    console.log(`✅ DepositNFT amount extracted: ${tokenData.amount}`);
+                                } catch (error) {
+                                    console.log('⚠️ Could not parse amount from DepositNFT');
+                                }
+                            }
                         }
                     }
-                });
+                }
+                
+            } else if (eventInfo.name === 'Deposit') {
+                console.log('🎯 Processing Deposit - token address should be in topic1');
+                
+                // For Deposit: topic1 = tokenAddress (indexed), topic2 = withdrawalAddress (indexed)
+                if (lockLog.topic1) {
+                    const tokenAddress = '0x' + lockLog.topic1.slice(-40).toLowerCase();
+                    console.log(`✅ Deposit token address from topic1: ${tokenAddress}`);
+                    
+                    if (tokenAddress !== '0x0000000000000000000000000000000000000000') {
+                        tokenData.address = tokenAddress;
+                        
+                        // Also extract amount from data chunks
+                        if (lockLog.data) {
+                            const data = lockLog.data.slice(2);
+                            const chunks = [];
+                            for (let i = 0; i < data.length; i += 64) {
+                                chunks.push('0x' + data.slice(i, i + 64));
+                            }
+                            console.log('📊 Deposit data chunks:', chunks);
+                            
+                            // Chunk[1] should be the amount for Deposit
+                            if (chunks.length > 1) {
+                                try {
+                                    const amountWei = BigInt(chunks[1]);
+                                    tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+                                    console.log(`✅ Deposit amount extracted: ${tokenData.amount}`);
+                                } catch (error) {
+                                    console.log('⚠️ Could not parse amount from Deposit');
+                                }
+                            }
+                        }
+                    }
+                }
+                
+            } else {
+                console.log('🔍 Processing other Team Finance event - trying data chunks');
+                
+                if (lockLog.data) {
+                    console.log('📊 Raw data length:', lockLog.data.length);
+                    console.log('📊 Raw data:', lockLog.data);
+                    
+                    const data = lockLog.data.slice(2);
+                    const chunks = [];
+                    
+                    for (let i = 0; i < data.length; i += 64) {
+                        chunks.push('0x' + data.slice(i, i + 64));
+                    }
+                    
+                    console.log('📊 Data chunks:', chunks);
+                    
+                    // Try to find token address in chunks
+                    chunks.forEach((chunk, index) => {
+                        if (chunk.length === 66) {
+                            const possibleAddress = '0x' + chunk.slice(-40).toLowerCase();
+                            console.log(`🔍 Chunk[${index}] possible address: ${possibleAddress}`);
+                            
+                            if (possibleAddress !== '0x0000000000000000000000000000000000000000' && 
+                                possibleAddress.match(/^0x[a-f0-9]{40}$/)) {
+                                console.log(`✅ Valid address found in chunk[${index}]: ${possibleAddress}`);
+                                if (!tokenData.address) tokenData.address = possibleAddress;
+                            }
+                        }
+                    });
+                }
             }
         } else {
             console.log('❌ No event definition found for topic0:', lockLog.topic0);
