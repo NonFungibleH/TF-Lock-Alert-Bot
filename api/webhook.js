@@ -1025,11 +1025,20 @@ function detectLock(body) {
         console.log(`  ↳ event=${ev || "N/A"}`);
         console.log(`  ↳ known=${isKnown}, lockEvent=${isLockEvent}, goplus=${isGoPlusContract}`);
         
-        if (isKnown && isLockEvent && !isGoPlusContract) {
+        // Priority 1: If this is a PBTC transaction, prioritize any lock event
+        if (isPbtcInitiated && isKnown && isLockEvent) {
+            lockLog = { ...l, resolvedEvent: ev };
+            console.log(`✅ PBTC priority lock detected: ${ev} from ${addr}`);
+            break; // Exit early for PBTC to prevent override
+        }
+        
+        // Priority 2: Standard lock detection (only if not PBTC)
+        if (!isPbtcInitiated && isKnown && isLockEvent && !isGoPlusContract) {
             lockLog = { ...l, resolvedEvent: ev };
             console.log(`✅ Standard lock detected: ${ev} from ${addr}`);
         }
         
+        // Priority 3: GoPlus detection (only if no other lock found)
         if (!lockLog && isGoPlusContract) {
             const goPlusLock = detectGoPlusLock(l, eventMap);
             if (goPlusLock) {
