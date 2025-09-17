@@ -1079,7 +1079,7 @@ function detectLock(body) {
 
     let type = "Unknown";
     if (isPbtcInitiated) {
-        type = "V3 Token";
+        type = "V3 Token"; // Fixed: PBTC should be V3, not V2
     } else if (isTeamFinance) {
         type = eventName === "Deposit" ? "V2 Token"
             : eventName === "DepositNFT" ? "V3 Token"
@@ -1139,7 +1139,7 @@ module.exports = async (req, res) => {
         const dashboardResult = await sendToDashboard(lockResult, body, tokenData, req);
         console.log('📊 Dashboard result:', dashboardResult ? 'Success' : 'Failed');
         
-        // Handle Telegram notification
+        // Handle Telegram notification with improved message format
         let telegramSent = false;
         
         console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
@@ -1158,13 +1158,14 @@ module.exports = async (req, res) => {
                     `🔖 Source: ${source}`
                 ];
 
-                // Add token information if available
-                if (tokenData.symbol !== 'UNKNOWN') {
-                    parts.push(`🪙 Token: ${tokenData.symbol}`);
+                // Only add token information if it's meaningful
+                // Skip LP-TOKEN and zero amounts to clean up the message
+                if (tokenData.symbol !== 'UNKNOWN' && 
+                    tokenData.symbol !== 'LP-TOKEN' && 
+                    tokenData.amount > 0) {
                     
-                    if (tokenData.amount > 0) {
-                        parts.push(`💰 Amount: ${tokenData.amount.toLocaleString()} tokens`);
-                    }
+                    parts.push(`🪙 Token: ${tokenData.symbol}`);
+                    parts.push(`💰 Amount: ${tokenData.amount.toLocaleString()} tokens`);
                     
                     if (tokenData.priceAtLock > 0) {
                         parts.push(`💵 Price: ${tokenData.priceAtLock.toFixed(6)}`);
@@ -1173,8 +1174,6 @@ module.exports = async (req, res) => {
                     if (tokenData.usdValue > 0) {
                         parts.push(`💸 USD Value: ${tokenData.usdValue.toLocaleString()}`);
                     }
-                } else {
-                    parts.push(`⚠️ Token: ${tokenData.symbol} (Data extraction issue)`);
                 }
 
                 parts.push(`🔗 [View Transaction](${explorerLink})`);
