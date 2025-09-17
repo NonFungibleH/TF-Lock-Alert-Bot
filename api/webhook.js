@@ -851,6 +851,14 @@ async function sendToDashboard(lockResult, body, tokenData, req) {
 // -----------------------------------------
 const sentTxs = new Set();
 
+// Clear the sentTxs set periodically to prevent memory issues
+setInterval(() => {
+    if (sentTxs.size > 1000) {
+        console.log(`🧹 Clearing sentTxs set (${sentTxs.size} entries)`);
+        sentTxs.clear();
+    }
+}, 300000); // Clear every 5 minutes if over 1000 entries
+
 function toDecChainId(maybeHex) {
     if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
         return String(parseInt(maybeHex, 16));
@@ -951,13 +959,27 @@ function detectGoPlusLock(log, eventMap) {
 }
 
 function isPbtcTransaction(body, fromAddress, chainId) {
+    // Check if from address is PBTC wallet
     if (fromAddress === PBTC_WALLET && chainId === "8453") {
         return true;
     }
     
+    // Check if any transaction input contains PBTC deploy method
     const txs = Array.isArray(body.txs) ? body.txs : [];
     for (const tx of txs) {
         if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
+            return true;
+        }
+        // Also check the 'from' field in txs array
+        if (tx.from && tx.from.toLowerCase() === PBTC_WALLET && chainId === "8453") {
+            return true;
+        }
+    }
+    
+    // Check if any log is from PBTC wallet (in case it's in internal transactions)
+    const logs = Array.isArray(body.logs) ? body.logs : [];
+    for (const log of logs) {
+        if (log.address && log.address.toLowerCase() === PBTC_WALLET && chainId === "8453") {
             return true;
         }
     }
@@ -992,11 +1014,36 @@ function detectLock(body) {
 
     let lockLog = null;
     let isAdshareSource = false;
-    const fromAddress = (body.txs?.[0]?.from || "").toLowerCase();
+    const fromAddress = (body.txs?.[0]?.from || body.from || "").toLowerCase();
     const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
 
     console.log(`👤 From address: ${fromAddress}`);
+    console.log(`🅿️ PBTC wallet: ${PBTC_WALLET}`);
     console.log(`🅿️ PBTC initiated: ${isPbtcInitiated}`);
+    console.log(`🌐 Chain ID: ${chainId}`);
+    
+    // Additional PBTC debug info
+    if (chainId === "8453") {
+        console.log(`🔍 PBTC Debug - Base chain confirmed`);
+        console.log(`🔍 PBTC Debug - From address match: ${fromAddress === PBTC_WALLET}`);
+        
+        const txs = Array.isArray(body.txs) ? body.txs : [];
+        for (const tx of txs) {
+            if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
+                console.log(`🔍 PBTC Debug - Found PBTC deploy method: ${tx.input.substring(0, 20)}...`);
+            }
+            if (tx.from && tx.from.toLowerCase() === PBTC_WALLET) {
+                console.log(`🔍 PBTC Debug - Found PBTC wallet in tx.from: ${tx.from}`);
+            }
+        }
+        
+        const logs = Array.isArray(body.logs) ? body.logs : [];
+        for (const log of logs) {
+            if (log.address && log.address.toLowerCase() === PBTC_WALLET) {
+                console.log(`🔍 PBTC Debug - Found PBTC wallet in log.address: ${log.address}`);
+            }
+        }
+    }
 
     for (let i = 0; i < logs.length; i++) {
         const l = logs[i];
@@ -1059,11 +1106,19 @@ function detectLock(body) {
         return null;
     }
 
-    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
-    if (!txHash || sentTxs.has(txHash)) {
-        console.log(`⏩ Skipping duplicate or missing txHash: ${txHash}`);
+    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash || body.hash;
+    if (!txHash) {
+        console.log(`❌ No txHash found in lockLog or body`);
+        console.log('🔍 === LOCK DETECTION DEBUG END ===');
         return null;
     }
+    
+    if (sentTxs.has(txHash)) {
+        console.log(`⏩ Skipping duplicate txHash: ${txHash}`);
+        console.log('🔍 === LOCK DETECTION DEBUG END ===');
+        return null;
+    }
+    
     sentTxs.add(txHash);
 
     const eventName = lockLog.resolvedEvent || "Unknown";
