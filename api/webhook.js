@@ -1048,6 +1048,47 @@ function detectLock(body) {
     console.log(`🌐 Processing chain: ${chain.name} (${chainId})`);
     console.log(`🪵 Processing ${logs.length} logs`);
 
+    // CRITICAL: PRE-CHECK FOR PBTC TRANSACTIONS BEFORE ANYTHING ELSE
+    let forcePBTC = false;
+    if (chainId === "8453") { // Only on Base chain
+        const txs = Array.isArray(body.txs) ? body.txs : [];
+        const allFromAddresses = [
+            body.txs?.[0]?.from,
+            body.from,
+            ...txs.map(tx => tx.from),
+            ...logs.map(log => log.from)
+        ].filter(addr => addr).map(addr => addr.toLowerCase());
+
+        console.log(`🅿️ === PBTC PRE-CHECK ===`);
+        console.log(`🅿️ All from addresses found:`, allFromAddresses);
+        console.log(`🅿️ Target PBTC proxy: 0xd95a366a2c887033ba71743c6342e2df470e9db9`);
+
+        // Check if ANY from address matches PBTC proxy
+        if (allFromAddresses.includes("0xd95a366a2c887033ba71743c6342e2df470e9db9")) {
+            forcePBTC = true;
+            console.log(`🎉 PBTC FORCE-DETECTED via from address match`);
+        }
+
+        // Also check if any tx targets the PBTC contract
+        const allToAddresses = txs.map(tx => tx.to).filter(addr => addr).map(addr => addr.toLowerCase());
+        console.log(`🅿️ All to addresses found:`, allToAddresses);
+        console.log(`🅿️ Target PBTC contract: 0x7feccc5e213b61a825cc5f417343e013509c8746`);
+
+        if (allToAddresses.includes("0x7feccc5e213b61a825cc5f417343e013509c8746")) {
+            forcePBTC = true;
+            console.log(`🎉 PBTC FORCE-DETECTED via to address match`);
+        }
+
+        // Check for Adshares involvement
+        const bodyStr = JSON.stringify(body).toLowerCase();
+        if (bodyStr.includes('adshares') || bodyStr.includes('"ads"')) {
+            forcePBTC = true;
+            console.log(`🎉 PBTC FORCE-DETECTED via Adshares involvement`);
+        }
+
+        console.log(`🅿️ Final PBTC force decision: ${forcePBTC}`);
+    }
+
     const eventMap = {};
     if (Array.isArray(body.abi)) {
         body.abi.forEach(ev => {
@@ -1063,8 +1104,30 @@ function detectLock(body) {
 
     let lockLog = null;
     let isAdshareSource = false;
-    const fromAddress = (body.txs?.[0]?.from || body.from || "").toLowerCase();
-    const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
+    
+    // CRITICAL: Multiple ways to extract the from address
+    const fromAddress1 = (body.txs?.[0]?.from || "").toLowerCase();
+    const fromAddress2 = (body.from || "").toLowerCase();
+    const fromAddress3 = logs.length > 0 ? (logs.find(log => log.transactionHash)?.from || "").toLowerCase() : "";
+    
+    console.log(`🔍 === FROM ADDRESS EXTRACTION DEBUG ===`);
+    console.log(`🔍 Method 1 (body.txs[0].from): "${fromAddress1}"`);
+    console.log(`🔍 Method 2 (body.from): "${fromAddress2}"`);
+    console.log(`🔍 Method 3 (logs.from): "${fromAddress3}"`);
+    
+    // Use the first non-empty from address
+    const fromAddress = fromAddress1 || fromAddress2 || fromAddress3;
+    console.log(`🔍 Final fromAddress: "${fromAddress}"`);
+    
+    // CRITICAL: Set isPbtcInitiated based on force decision
+    let isPbtcInitiated = forcePBTC;
+    console.log(`🅿️ isPbtcInitiated set to: ${isPbtcInitiated} (based on force decision)`);
+    
+    // If not forced, try original detection
+    if (!isPbtcInitiated) {
+        isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
+        console.log(`🅿️ isPbtcInitiated after original detection: ${isPbtcInitiated}`);
+    }
 
     console.log(`👤 From address: ${fromAddress}`);
     console.log(`🅿️ PBTC wallet: ${PBTC_WALLET}`);
@@ -1119,6 +1182,16 @@ function detectLock(body) {
         console.log(`  ↳ topic0=${l.topic0}`);
         console.log(`  ↳ event=${ev || "N/A"}`);
         console.log(`  ↳ known=${isKnown}, lockEvent=${isLockEvent}, goplus=${isGoPlusContract}`);
+        
+        // CRITICAL: Priority detection for PBTC transactions
+        // Check FIRST if this is a PBTC transaction before any other processing
+        const txFromAddr = (l.transactionHash && body.txs?.find(tx => tx.hash === l.transactionHash)?.from || "").toLowerCase();
+        if (txFromAddr === "0xd95a366a2c887033ba71743c6342e2df470e9db9" || 
+            fromAddress === "0xd95a366a2c887033ba71743c6342e2df470e9db9" ||
+            addr === "0x7feccc5e213b61a825cc5f417343e013509c8746") {
+            console.log(`🅿️ PBTC PATTERN DETECTED in log processing - forcing PBTC classification`);
+            isPbtcInitiated = true;
+        }
         
         // Priority 1: If this is a PBTC transaction, prioritize any lock event
         if (isPbtcInitiated && isKnown && isLockEvent) {
@@ -1186,9 +1259,10 @@ function detectLock(body) {
     console.log(`🏷️ uncxVersion: ${uncxVersion || 'none'}`);
     console.log(`🏷️ isAdshareSource: ${isAdshareSource}`);
     
+    // ABSOLUTE PRIORITY: PBTC detection overrides EVERYTHING
     if (isPbtcInitiated) {
         source = "PBTC";
-        console.log(`✅ Source assigned: PBTC (due to isPbtcInitiated)`);
+        console.log(`✅ Source FORCED to PBTC (isPbtcInitiated = true)`);
     } else if (isTeamFinance) {
         source = isAdshareSource ? "Team Finance (via Adshare)" : "Team Finance";
         console.log(`✅ Source assigned: ${source} (due to isTeamFinance)`);
@@ -1204,18 +1278,27 @@ function detectLock(body) {
     }
 
     let type = "Unknown";
+    console.log(`🏷️ === TYPE ASSIGNMENT DEBUG ===`);
+    console.log(`🏷️ isPbtcInitiated: ${isPbtcInitiated}`);
+    console.log(`🏷️ eventName: ${eventName}`);
+    
+    // ABSOLUTE PRIORITY: PBTC type assignment
     if (isPbtcInitiated) {
-        type = "V3 Token"; // Fixed: PBTC should be V3, not V2
+        type = "V3 Token"; // PBTC is ALWAYS V3
+        console.log(`✅ Type FORCED to V3 Token (PBTC detected)`);
     } else if (isTeamFinance) {
         type = eventName === "Deposit" ? "V2 Token"
             : eventName === "DepositNFT" ? "V3 Token"
             : eventName === "onLock" ? "V3 Token"
             : eventName === "LiquidityLocked" ? "V4 Token"
             : "Unknown";
+        console.log(`✅ Type assigned: ${type} (Team Finance logic)`);
     } else if (uncxVersion) {
         type = uncxVersion.includes("V2") ? uncxVersion : `${uncxVersion} Token`;
+        console.log(`✅ Type assigned: ${type} (UNCX logic)`);
     } else if (isGoPlus) {
         type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
+        console.log(`✅ Type assigned: ${type} (GoPlus logic)`);
     }
 
     console.log(`🎯 Final detection result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
