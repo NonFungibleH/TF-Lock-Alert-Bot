@@ -851,24 +851,17 @@ async function sendToDashboard(lockResult, body, tokenData, req) {
 // -----------------------------------------
 const sentTxs = new Set();
 
-// Clear the sentTxs set periodically to prevent memory issues
-// But keep recent transactions for at least 30 minutes to prevent duplicates
-const sentTxsTimestamps = new Map();
-
-setInterval(() => {
-    const now = Date.now();
-    const thirtyMinutesAgo = now - (30 * 60 * 1000); // 30 minutes ago
-    
-    // Remove transactions older than 30 minutes
-    for (const [txHash, timestamp] of sentTxsTimestamps.entries()) {
-        if (timestamp < thirtyMinutesAgo) {
-            sentTxs.delete(txHash);
-            sentTxsTimestamps.delete(txHash);
-        }
+// Simple cleanup - just limit the set size instead of time-based tracking
+function cleanupSentTxs() {
+    if (sentTxs.size > 500) {
+        // Convert to array, remove oldest half, convert back to set
+        const txArray = Array.from(sentTxs);
+        const keepTxs = txArray.slice(-250); // Keep most recent 250
+        sentTxs.clear();
+        keepTxs.forEach(tx => sentTxs.add(tx));
+        console.log(`🧹 Cleaned sentTxs set. Size: ${sentTxs.size}`);
     }
-    
-    console.log(`🧹 Cleaned old transactions. Current set size: ${sentTxs.size}`);
-}, 600000); // Clean every 10 minutes
+}
 
 function toDecChainId(maybeHex) {
     if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
@@ -1240,9 +1233,9 @@ function detectLock(body) {
         return null;
     }
     
-    // Add to both the set and timestamp map
+    // Add to set and cleanup if needed
     sentTxs.add(txHash);
-    sentTxsTimestamps.set(txHash, Date.now());
+    cleanupSentTxs();
 
     const eventName = lockLog.resolvedEvent || "Unknown";
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
