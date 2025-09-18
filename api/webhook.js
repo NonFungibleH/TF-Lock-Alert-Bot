@@ -945,20 +945,19 @@ const PBTC_DEPLOY_METHOD_ID = "0xce84399a";
 // Additional PBTC patterns that might indicate PBTC transactions
 const PBTC_RELATED_ADDRESSES = new Set([
     "0xad7c34923db6f834ad48474acc4e0fc2476bf23f", // Original PBTC wallet
-    "0xd95a366a2c887033ba71743c6342e2df470e9db9", // Proxy/deployer contract
-    // Add more PBTC-related addresses as they're discovered
+    "0xd95a366a2c887033ba71743c6342e2df470e9db9", // Proxy/deployer contract (confirmed from transactions)
 ]);
 
 const PBTC_TARGET_CONTRACTS = new Set([
-    "0x7feccc5e213b61a825cc5f417343e013509c8746", // Target deployment contract
-    // Add more target contracts as needed
+    "0x7feccc5e213b61a825cc5f417343e013509c8746", // Target deployment contract (confirmed from transactions)
 ]);
 
-// Adshares token addresses - PBTC transactions often involve ADS tokens
-const ADSHARES_TOKEN_ADDRESSES = new Set([
-    "0x6e57f6967c2476bf23f", // Add the actual Adshares token address from your screenshot
-    // Add more Adshares addresses as discovered
-]);
+// Adshares token patterns - PBTC transactions often involve ADS tokens
+const ADSHARES_PATTERNS = [
+    "adshares",
+    "ads",
+    "0x6e57f6967c2476bf23f", // Add actual ADS token address when confirmed
+];
 
 const GOPLUS_CONTRACT_SET = new Set(Object.keys(GOPLUS_CONTRACTS).map(s => s.toLowerCase()));
 
@@ -990,9 +989,7 @@ function detectGoPlusLock(log, eventMap) {
 
 function isPbtcTransaction(body, fromAddress, chainId) {
     console.log(`🔍 === PBTC DETECTION DEBUG START ===`);
-    console.log(`🔍 Checking chain ID: ${chainId} (target: 8453)`);
-    console.log(`🔍 From address: ${fromAddress}`);
-    console.log(`🔍 PBTC wallet: ${PBTC_WALLET}`);
+    console.log(`🔍 Chain ID: ${chainId}, From: ${fromAddress}`);
     
     // Only check on Base chain
     if (chainId !== "8453") {
@@ -1000,127 +997,41 @@ function isPbtcTransaction(body, fromAddress, chainId) {
         return false;
     }
     
-    // Method 1: Check main from address (original PBTC wallet)
-    if (fromAddress === PBTC_WALLET) {
-        console.log(`✅ PBTC detected via original wallet address`);
+    // CRITICAL: Check the exact pattern from failing transactions
+    const isKnownPbtcProxy = fromAddress === "0xd95a366a2c887033ba71743c6342e2df470e9db9";
+    console.log(`🔍 PBTC proxy check: ${isKnownPbtcProxy}`);
+    
+    if (isKnownPbtcProxy) {
+        console.log(`✅ PBTC detected via known proxy address`);
         return true;
     }
     
-    // Method 2: Check for any PBTC-related addresses
-    if (PBTC_RELATED_ADDRESSES.has(fromAddress)) {
-        console.log(`✅ PBTC detected via related address: ${fromAddress}`);
-        return true;
-    }
-    
-    // Method 3: Check transaction inputs for PBTC deploy method
+    // Check for PBTC target contract in transactions
     const txs = Array.isArray(body.txs) ? body.txs : [];
-    console.log(`🔍 Checking ${txs.length} transactions for PBTC patterns`);
-    
-    for (let i = 0; i < txs.length; i++) {
-        const tx = txs[i];
-        console.log(`🔍 TX[${i}] from: ${tx.from}, to: ${tx.to}, input: ${tx.input?.substring(0, 20)}...`);
-        
-        // Check for PBTC deploy method
-        if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
-            console.log(`✅ PBTC detected via deploy method in TX[${i}]`);
-            return true;
-        }
-        
-        // Check for PBTC-related from addresses
-        if (tx.from && PBTC_RELATED_ADDRESSES.has(tx.from.toLowerCase())) {
-            console.log(`✅ PBTC detected via TX[${i}] from field: ${tx.from}`);
-            return true;
-        }
-        
-        // Check for PBTC target contracts
-        if (tx.to && PBTC_TARGET_CONTRACTS.has(tx.to.toLowerCase())) {
-            console.log(`✅ PBTC detected via TX[${i}] to field (target contract): ${tx.to}`);
+    for (const tx of txs) {
+        if (tx.to && tx.to.toLowerCase() === "0x7feccc5e213b61a825cc5f417343e013509c8746") {
+            console.log(`✅ PBTC detected via target contract: ${tx.to}`);
             return true;
         }
     }
     
-    // Method 4: Check logs for PBTC-related addresses
+    // Check for Adshares involvement in token transfers
     const logs = Array.isArray(body.logs) ? body.logs : [];
-    console.log(`🔍 Checking ${logs.length} logs for PBTC addresses`);
-    
-    for (let i = 0; i < logs.length; i++) {
-        const log = logs[i];
-        if (log.address && PBTC_RELATED_ADDRESSES.has(log.address.toLowerCase())) {
-            console.log(`✅ PBTC detected via log[${i}] address: ${log.address}`);
+    for (const log of logs) {
+        const logStr = JSON.stringify(log).toLowerCase();
+        if (logStr.includes('adshares') || logStr.includes('"ads"')) {
+            console.log(`✅ PBTC detected via Adshares involvement`);
             return true;
         }
     }
     
-    // Method 5: Check internal transactions
-    if (body.internalTxs && Array.isArray(body.internalTxs)) {
-        console.log(`🔍 Checking ${body.internalTxs.length} internal transactions`);
-        for (let i = 0; i < body.internalTxs.length; i++) {
-            const itx = body.internalTxs[i];
-            if (itx.from && PBTC_RELATED_ADDRESSES.has(itx.from.toLowerCase())) {
-                console.log(`✅ PBTC detected via internal TX[${i}] from: ${itx.from}`);
-                return true;
-            }
-            if (itx.to && PBTC_RELATED_ADDRESSES.has(itx.to.toLowerCase())) {
-                console.log(`✅ PBTC detected via internal TX[${i}] to: ${itx.to}`);
-                return true;
-            }
-        }
-    }
-    
-    // Method 6: Pattern-based detection for PBTC transactions
-    // Look for specific transaction patterns that indicate PBTC
-    if (fromAddress === "0xd95a366a2c887033ba71743c6342e2df470e9db9" && 
-        txs.some(tx => tx.to === "0x7feccc5e213b61a825cc5f417343e013509c8746")) {
-        console.log(`✅ PBTC detected via transaction pattern (proxy -> target contract)`);
+    // Original PBTC wallet check
+    if (fromAddress === PBTC_WALLET) {
+        console.log(`✅ PBTC detected via original wallet`);
         return true;
     }
     
-    // Method 7: Check for Adshares token involvement (PBTC often involves ADS tokens)
-    console.log(`🔍 Checking for Adshares token involvement...`);
-    
-    // Check transaction logs for Adshares token transfers
-    for (let i = 0; i < logs.length; i++) {
-        const log = logs[i];
-        
-        // Look for Transfer events involving Adshares tokens
-        if (log.topics && log.topics[0] === "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef") {
-            // This is a Transfer event, check if it's from/to an Adshares-related address
-            const topics = log.topics;
-            if (topics.length >= 3) {
-                const fromTopic = topics[1];
-                const toTopic = topics[2];
-                
-                // Check if any topic contains Adshares-related addresses or patterns
-                if (fromTopic.includes('6e57f6967c2476bf23f') || 
-                    toTopic.includes('6e57f6967c2476bf23f') ||
-                    log.data && log.data.includes('Adshares')) {
-                    console.log(`✅ PBTC detected via Adshares token involvement in log[${i}]`);
-                    return true;
-                }
-            }
-        }
-    }
-    
-    // Method 8: Check for "ADS" or "Adshares" in decoded event data
-    for (let i = 0; i < logs.length; i++) {
-        const log = logs[i];
-        if (log.decoded && log.decoded.inputs) {
-            const logStr = JSON.stringify(log.decoded).toLowerCase();
-            if (logStr.includes('adshares') || logStr.includes(' ads ') || logStr.includes('"ads"')) {
-                console.log(`✅ PBTC detected via Adshares reference in decoded log[${i}]`);
-                return true;
-            }
-        }
-        
-        // Also check raw log data for Adshares signatures
-        if (log.data && (log.data.toLowerCase().includes('adshares') || 
-            log.address === "0x6e57f6967c2476bf23f")) { // Replace with actual ADS token address
-            console.log(`✅ PBTC detected via Adshares data in log[${i}]`);
-            return true;
-        }
-    }
-    
-    console.log(`❌ PBTC not detected through any method`);
+    console.log(`❌ PBTC not detected`);
     console.log(`🔍 === PBTC DETECTION DEBUG END ===`);
     return false;
 }
@@ -1160,19 +1071,26 @@ function detectLock(body) {
     console.log(`🅿️ PBTC initiated: ${isPbtcInitiated}`);
     console.log(`🌐 Chain ID: ${chainId}`);
     
+    // Show critical debugging info for failing cases
+    console.log(`🔍 === CRITICAL DEBUG INFO ===`);
+    console.log(`🔍 Exact from address: "${fromAddress}"`);
+    console.log(`🔍 Expected PBTC proxy: "0xd95a366a2c887033ba71743c6342e2df470e9db9"`);
+    console.log(`🔍 From address match: ${fromAddress === "0xd95a366a2c887033ba71743c6342e2df470e9db9"}`);
+    
     // If PBTC was detected, show why
     if (isPbtcInitiated) {
         console.log(`🎉 PBTC TRANSACTION CONFIRMED - Will override other source detection`);
+    } else {
+        console.log(`❌ PBTC NOT DETECTED - Transaction will be processed as other source`);
     }
     
-    // Show full body structure for debugging
-    console.log(`📦 Body structure:`, {
-        chainId: body.chainId,
-        txs: body.txs?.length || 0,
-        logs: body.logs?.length || 0,
-        internalTxs: body.internalTxs?.length || 0,
-        from: body.from,
-        hash: body.hash
+    // Show transaction structure
+    const txs = Array.isArray(body.txs) ? body.txs : [];
+    txs.forEach((tx, i) => {
+        console.log(`🔍 TX[${i}]: from=${tx.from}, to=${tx.to}`);
+        if (tx.to === "0x7feccc5e213b61a825cc5f417343e013509c8746") {
+            console.log(`🎯 Found PBTC target contract in TX[${i}]!`);
+        }
     });
 
     for (let i = 0; i < logs.length; i++) {
