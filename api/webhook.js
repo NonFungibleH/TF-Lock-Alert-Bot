@@ -709,6 +709,72 @@ async function extractUNCXDataDebug(lockLog, lockResult, eventMap) {
                 tokenData.priceAtLock = price;
                 if (tokenData.amount > 0) {
                     tokenData.usdValue = tokenData.amount * price;
+                } else {
+                    tokenData.usdValue = price; // Default to 1 token
+                }
+            }
+        }
+
+        console.log('🎯 Final UNCX token data:', tokenData);
+        return tokenData;
+
+    } catch (error) {
+        console.error('❌ UNCX extraction error:', error);
+        console.error('❌ Stack:', error.stack);
+        return tokenData;
+    }
+}
+
+// DEBUG: Enhanced GoPlus extraction with detailed logging
+async function extractGoPlusDataDebug(lockLog, lockResult) {
+    console.log('🛡️ === GOPLUS EXTRACTION DEBUG ===');
+    console.log('🛡️ Lock log received:', JSON.stringify(lockLog, null, 2));
+    
+    const tokenData = {
+        address: null,
+        symbol: 'UNKNOWN',
+        amount: 0,
+        priceAtLock: 0,
+        usdValue: 0
+    };
+
+    try {
+        if (lockLog.decoded && lockLog.decoded.inputs) {
+            const inputs = lockLog.decoded.inputs;
+            console.log('📋 GoPlus decoded inputs:', inputs);
+
+            for (const input of inputs) {
+                if (input.name === 'token' && input.value) {
+                    tokenData.address = input.value.toLowerCase();
+                    console.log('🎯 Found GoPlus token address:', tokenData.address);
+                }
+                if (input.name === 'amount' && input.value) {
+                    tokenData.amount = parseFloat(input.value) / Math.pow(10, 18);
+                    console.log('📊 Found GoPlus token amount:', tokenData.amount);
+                }
+            }
+        }
+
+        if (tokenData.address) {
+            const chainId = getChainIdFromName(lockResult.chain.name);
+            console.log('🌐 Getting GoPlus token info for chain:', chainId);
+            
+            const [symbol, price] = await Promise.all([
+                getTokenSymbolFromContract(tokenData.address, chainId),
+                getTokenPrice(tokenData.address, chainId)
+            ]);
+            
+            console.log('🏷️ GoPlus Symbol result:', symbol);
+            console.log('💰 GoPlus Price result:', price);
+            
+            if (symbol) {
+                tokenData.symbol = symbol;
+            }
+            
+            if (price) {
+                tokenData.priceAtLock = price;
+                if (tokenData.amount > 0) {
+                    tokenData.usdValue = tokenData.amount * price;
                 }
             }
         }
@@ -839,8 +905,7 @@ async function extractTokenDataFromLogs(body, lockResult, eventMap) {
         symbol: 'UNKNOWN',
         amount: 0,
         priceAtLock: 0,
-        usdValue: 0,
-        extractionFailed: false
+        usdValue: 0
     };
 
     try {
@@ -868,7 +933,6 @@ async function extractTokenDataFromLogs(body, lockResult, eventMap) {
             console.log('❌ NO LOCK LOG FOUND FOR TOKEN EXTRACTION');
             console.log('📋 Known lockers:', Array.from(KNOWN_LOCKERS));
             console.log('📋 Log addresses found:', logs.map(l => l.address?.toLowerCase()));
-            tokenData.extractionFailed = true;
             return tokenData;
         }
 
@@ -892,12 +956,6 @@ async function extractTokenDataFromLogs(body, lockResult, eventMap) {
             tokenData = await extractGoPlusDataDebug(lockLog, lockResult);
         } else {
             console.log('❌ Unknown contract type for address:', contractAddr);
-            tokenData.extractionFailed = true;
-        }
-
-        // Mark as failed if we couldn't extract meaningful data
-        if (!tokenData.address && tokenData.symbol === 'UNKNOWN') {
-            tokenData.extractionFailed = true;
         }
 
         console.log('🎯 FINAL TOKEN EXTRACTION RESULT:', tokenData);
@@ -908,7 +966,6 @@ async function extractTokenDataFromLogs(body, lockResult, eventMap) {
     } catch (error) {
         console.error('❌ Error in token extraction:', error);
         console.error('❌ Stack trace:', error.stack);
-        tokenData.extractionFailed = true;
         return tokenData;
     }
 }
@@ -964,19 +1021,9 @@ async function sendToDashboard(lockResult, body, tokenData, req) {
 }
 
 // -----------------------------------------
-// UPDATED Shared Detection Logic with Enhanced PBTC Detection
+// Shared Detection Logic (Inline)
 // -----------------------------------------
 const sentTxs = new Set();
-
-function cleanupSentTxs() {
-    if (sentTxs.size > 500) {
-        const txArray = Array.from(sentTxs);
-        const keepTxs = txArray.slice(-250);
-        sentTxs.clear();
-        keepTxs.forEach(tx => sentTxs.add(tx));
-        console.log(`Cleaned sentTxs set. Size: ${sentTxs.size}`);
-    }
-}
 
 function toDecChainId(maybeHex) {
     if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
@@ -1019,11 +1066,6 @@ const GOPLUS_CONTRACTS = {
     "0xe7873eb8dda56ed49e51c87185ebcb93958e76f2": "V4",
     "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
     "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
-    "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
-    "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
-    "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
-    "0xf17a08a7d41f53b24ad07eb322cbbda2ebdec04b": "V2",
-    "0x25c9c4b56e820e0dea438b145284f02d9ca9bd52": "V3",
 };
 
 const KNOWN_LOCKERS = new Set([
@@ -1051,20 +1093,8 @@ const GOPLUS_EVENT_TOPICS = {
 
 const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCase();
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3";
-
-// Enhanced PBTC detection constants
 const PBTC_WALLET = "0xaD7c34923db6f834Ad48474Acc4E0FC2476bF23f".toLowerCase();
 const PBTC_DEPLOY_METHOD_ID = "0xce84399a";
-
-// PBTC-related addresses for comprehensive detection
-const PBTC_RELATED_ADDRESSES = new Set([
-    "0xad7c34923db6f834ad48474acc4e0fc2476bf23f", // Original PBTC wallet
-    "0xd95a366a2c887033ba71743c6342e2df470e9db9", // Proxy/deployer contract (confirmed from transactions)
-]);
-
-const PBTC_TARGET_CONTRACTS = new Set([
-    "0x7feccc5e213b61a825cc5f417343e013509c8746", // Target deployment contract (confirmed from transactions)
-]);
 
 const GOPLUS_CONTRACT_SET = new Set(Object.keys(GOPLUS_CONTRACTS).map(s => s.toLowerCase()));
 
@@ -1094,109 +1124,33 @@ function detectGoPlusLock(log, eventMap) {
     return null;
 }
 
-// Enhanced PBTC detection function
 function isPbtcTransaction(body, fromAddress, chainId) {
-    console.log(`PBTC Detection - Chain ID: ${chainId}, From: ${fromAddress}`);
-    
-    // Only check on Base chain
-    if (chainId !== "8453") {
-        console.log(`Not Base chain, skipping PBTC detection`);
-        return false;
-    }
-    
-    // Check 1: Known PBTC proxy address
-    const isKnownPbtcProxy = fromAddress === "0xd95a366a2c887033ba71743c6342e2df470e9db9";
-    console.log(`PBTC proxy check: ${isKnownPbtcProxy}`);
-    
-    if (isKnownPbtcProxy) {
-        console.log(`PBTC detected via known proxy address`);
+    if (fromAddress === PBTC_WALLET && chainId === "8453") {
         return true;
     }
     
-    // Check 2: PBTC target contract in transactions
     const txs = Array.isArray(body.txs) ? body.txs : [];
     for (const tx of txs) {
-        if (tx.to && tx.to.toLowerCase() === "0x7feccc5e213b61a825cc5f417343e013509c8746") {
-            console.log(`PBTC detected via target contract: ${tx.to}`);
-            return true;
-        }
-    }
-    
-    // Check 3: Adshares involvement in token transfers
-    const logs = Array.isArray(body.logs) ? body.logs : [];
-    for (const log of logs) {
-        const logStr = JSON.stringify(log).toLowerCase();
-        if (logStr.includes('adshares') || logStr.includes('"ads"')) {
-            console.log(`PBTC detected via Adshares involvement`);
-            return true;
-        }
-    }
-    
-    // Check 4: Original PBTC wallet check
-    if (fromAddress === PBTC_WALLET) {
-        console.log(`PBTC detected via original wallet`);
-        return true;
-    }
-    
-    // Check 5: PBTC deploy method
-    for (const tx of txs) {
         if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
-            console.log(`PBTC detected via deploy method`);
             return true;
         }
     }
     
-    console.log(`PBTC not detected`);
     return false;
 }
 
 function detectLock(body) {
+    console.log('🔍 === LOCK DETECTION DEBUG START ===');
+    console.log('📦 Received body for detection:', JSON.stringify(body, null, 2));
+    
     if (!body.chainId) return null;
     const chainId = toDecChainId(body.chainId);
     const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
     const logs = Array.isArray(body.logs) ? body.logs : [];
 
-    console.log(`Processing chain: ${chain.name} (${chainId})`);
-    console.log(`Processing ${logs.length} logs`);
+    console.log(`🌐 Processing chain: ${chain.name} (${chainId})`);
+    console.log(`🪵 Processing ${logs.length} logs`);
 
-    // CRITICAL: PRE-CHECK FOR PBTC TRANSACTIONS BEFORE ANYTHING ELSE
-    let forcePBTC = false;
-    if (chainId === "8453") { // Only on Base chain
-        const txs = Array.isArray(body.txs) ? body.txs : [];
-        const allFromAddresses = [
-            body.txs?.[0]?.from,
-            body.from,
-            ...txs.map(tx => tx.from),
-            ...logs.map(log => log.from)
-        ].filter(addr => addr).map(addr => addr.toLowerCase());
-
-        console.log(`PBTC PRE-CHECK - All from addresses:`, allFromAddresses);
-        console.log(`Target PBTC proxy: 0xd95a366a2c887033ba71743c6342e2df470e9db9`);
-
-        // Check if ANY from address matches PBTC proxy
-        if (allFromAddresses.includes("0xd95a366a2c887033ba71743c6342e2df470e9db9")) {
-            forcePBTC = true;
-            console.log(`PBTC FORCE-DETECTED via from address match`);
-        }
-
-        // Also check if any tx targets the PBTC contract
-        const allToAddresses = txs.map(tx => tx.to).filter(addr => addr).map(addr => addr.toLowerCase());
-        if (allToAddresses.includes("0x7feccc5e213b61a825cc5f417343e013509c8746")) {
-            forcePBTC = true;
-            console.log(`PBTC FORCE-DETECTED via to address match`);
-        }
-
-        // Check for Adshares involvement
-        const bodyStr = JSON.stringify(body).toLowerCase();
-        if (bodyStr.includes('adshares') || bodyStr.includes('"ads"')) {
-            forcePBTC = true;
-            console.log(`PBTC FORCE-DETECTED via Adshares involvement`);
-        }
-
-        console.log(`Final PBTC force decision: ${forcePBTC}`);
-    }
-
-    // Build ABI event map
     const eventMap = {};
     if (Array.isArray(body.abi)) {
         body.abi.forEach(ev => {
@@ -1206,33 +1160,22 @@ function detectLock(body) {
                 eventMap[hash] = { name: ev.name, signature: sig, inputs: ev.inputs };
             }
         });
-        console.log(`Built eventMap with ${Object.keys(eventMap).length} entries`);
+        console.log(`🗺️ Built eventMap with ${Object.keys(eventMap).length} entries`);
+        console.log('🗺️ Event signatures:', Object.values(eventMap).map(e => e.signature));
     }
 
     let lockLog = null;
     let isAdshareSource = false;
-    
-    // Enhanced from address extraction
-    const fromAddress1 = (body.txs?.[0]?.from || "").toLowerCase();
-    const fromAddress2 = (body.from || "").toLowerCase();
-    const fromAddress3 = logs.length > 0 ? (logs.find(log => log.transactionHash)?.from || "").toLowerCase() : "";
-    
-    const fromAddress = fromAddress1 || fromAddress2 || fromAddress3;
-    
-    // Set isPbtcInitiated based on force decision or original detection
-    let isPbtcInitiated = forcePBTC;
-    if (!isPbtcInitiated) {
-        isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
-    }
+    const fromAddress = (body.txs?.[0]?.from || "").toLowerCase();
+    const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
 
-    console.log(`From address: ${fromAddress}`);
-    console.log(`PBTC initiated: ${isPbtcInitiated}`);
+    console.log(`👤 From address: ${fromAddress}`);
+    console.log(`🅿️ PBTC initiated: ${isPbtcInitiated}`);
 
     for (let i = 0; i < logs.length; i++) {
         const l = logs[i];
         const addr = (l.address || "").toLowerCase();
         
-        // Enhanced event resolution
         let ev = l.name || l.eventName || l.decoded?.name || l.decoded?.event;
         
         if (!ev && eventMap[l.topic0]) {
@@ -1251,56 +1194,42 @@ function detectLock(body) {
         const isLockEvent = LOCK_EVENTS.has(ev);
         const isGoPlusContract = GOPLUS_CONTRACT_SET.has(addr);
         
-        console.log(`Log[${i}]: addr=${addr}, event=${ev || "N/A"}, known=${isKnown}, lockEvent=${isLockEvent}`);
+        console.log(`Log[${i}]: addr=${addr}`);
+        console.log(`  ↳ topic0=${l.topic0}`);
+        console.log(`  ↳ event=${ev || "N/A"}`);
+        console.log(`  ↳ known=${isKnown}, lockEvent=${isLockEvent}, goplus=${isGoPlusContract}`);
         
-        // Priority 1: If this is a PBTC transaction, prioritize any lock event
-        if (isPbtcInitiated && isKnown && isLockEvent) {
+        if (isKnown && isLockEvent && !isGoPlusContract) {
             lockLog = { ...l, resolvedEvent: ev };
-            console.log(`PBTC priority lock detected: ${ev} from ${addr}`);
-            break; // Exit early for PBTC to prevent override
+            console.log(`✅ Standard lock detected: ${ev} from ${addr}`);
         }
         
-        // Priority 2: Standard detection for non-PBTC transactions
-        if (!isPbtcInitiated && isKnown && isLockEvent && !isGoPlusContract) {
-            lockLog = { ...l, resolvedEvent: ev };
-            console.log(`Standard lock detected: ${ev} from ${addr}`);
-        }
-        
-        // Priority 3: GoPlus detection (only if no other lock found)
         if (!lockLog && isGoPlusContract) {
             const goPlusLock = detectGoPlusLock(l, eventMap);
             if (goPlusLock) {
                 lockLog = goPlusLock;
-                console.log(`GoPlus lock detected: ${goPlusLock.resolvedEvent} from ${addr}`);
+                console.log(`✅ GoPlus lock detected: ${goPlusLock.resolvedEvent} from ${addr}`);
             }
         }
         
-        // Adshares detection
         if (addr === ADS_FUND_FACTORY && l.topic0 === TOKEN_CREATED_TOPIC) {
             isAdshareSource = true;
-            console.log("Detected Adshares factory source");
+            console.log("📂 Detected Adshares factory source");
         }
     }
 
     if (!lockLog) {
-        console.log("No lock event found");
+        console.log("❌ No lock event found in detection");
+        console.log('🔍 === LOCK DETECTION DEBUG END ===');
         return null;
     }
 
-    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash || body.hash;
-    if (!txHash) {
-        console.log(`No txHash found`);
+    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
+    if (!txHash || sentTxs.has(txHash)) {
+        console.log(`⏩ Skipping duplicate or missing txHash: ${txHash}`);
         return null;
     }
-    
-    if (sentTxs.has(txHash)) {
-        console.log(`Skipping duplicate txHash: ${txHash}`);
-        return null;
-    }
-    
-    // Add to set and cleanup if needed
     sentTxs.add(txHash);
-    cleanupSentTxs();
 
     const eventName = lockLog.resolvedEvent || "Unknown";
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
@@ -1309,50 +1238,36 @@ function detectLock(body) {
     const isGoPlus = GOPLUS_CONTRACTS[lockerAddr];
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
 
-    // ABSOLUTE PRIORITY: PBTC source assignment
     let source;
-    console.log(`SOURCE ASSIGNMENT - isPbtcInitiated: ${isPbtcInitiated}`);
-    
     if (isPbtcInitiated) {
         source = "PBTC";
-        console.log(`Source FORCED to PBTC`);
     } else if (isTeamFinance) {
         source = isAdshareSource ? "Team Finance (via Adshare)" : "Team Finance";
-        console.log(`Source assigned: ${source}`);
     } else if (isGoPlus) {
         source = "GoPlus";
-        console.log(`Source assigned: GoPlus`);
     } else if (uncxVersion) {
         source = "UNCX";
-        console.log(`Source assigned: UNCX`);
     } else {
         source = "Unknown";
-        console.log(`Source assigned: Unknown`);
     }
 
-    // ABSOLUTE PRIORITY: PBTC type assignment
     let type = "Unknown";
-    console.log(`TYPE ASSIGNMENT - isPbtcInitiated: ${isPbtcInitiated}, eventName: ${eventName}`);
-    
     if (isPbtcInitiated) {
-        type = "V3 Token"; // PBTC is ALWAYS V3
-        console.log(`Type FORCED to V3 Token (PBTC detected)`);
+        type = "V3 Token";
     } else if (isTeamFinance) {
         type = eventName === "Deposit" ? "V2 Token"
             : eventName === "DepositNFT" ? "V3 Token"
             : eventName === "onLock" ? "V3 Token"
             : eventName === "LiquidityLocked" ? "V4 Token"
             : "Unknown";
-        console.log(`Type assigned: ${type} (Team Finance logic)`);
     } else if (uncxVersion) {
         type = uncxVersion.includes("V2") ? uncxVersion : `${uncxVersion} Token`;
-        console.log(`Type assigned: ${type} (UNCX logic)`);
     } else if (isGoPlus) {
         type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
-        console.log(`Type assigned: ${type} (GoPlus logic)`);
     }
 
-    console.log(`Final result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
+    console.log(`🎯 Final detection result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
+    console.log('🔍 === LOCK DETECTION DEBUG END ===');
 
     return { chain, type, source, explorerLink, txHash, eventMap };
 }
@@ -1398,7 +1313,7 @@ module.exports = async (req, res) => {
         const dashboardResult = await sendToDashboard(lockResult, body, tokenData, req);
         console.log('📊 Dashboard result:', dashboardResult ? 'Success' : 'Failed');
         
-        // FIXED: Handle Telegram notification with proper token extraction logic
+        // Handle Telegram notification
         let telegramSent = false;
         
         console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
@@ -1417,8 +1332,8 @@ module.exports = async (req, res) => {
                     `🔖 Source: ${source}`
                 ];
 
-                // FIXED: Only add token information if extraction was successful and meaningful
-                if (tokenData.symbol && tokenData.symbol !== 'UNKNOWN' && !tokenData.extractionFailed) {
+                // Add token information if available
+                if (tokenData.symbol !== 'UNKNOWN') {
                     parts.push(`🪙 Token: ${tokenData.symbol}`);
                     
                     if (tokenData.amount > 0) {
@@ -1432,8 +1347,9 @@ module.exports = async (req, res) => {
                     if (tokenData.usdValue > 0) {
                         parts.push(`💸 USD Value: ${tokenData.usdValue.toLocaleString()}`);
                     }
+                } else {
+                    parts.push(`⚠️ Token: ${tokenData.symbol} (Data extraction issue)`);
                 }
-                // FIXED: No token line will be shown if extraction failed or symbol is UNKNOWN
 
                 parts.push(`🔗 [View Transaction](${explorerLink})`);
                 const message = parts.join("\n");
@@ -1484,70 +1400,4 @@ module.exports = async (req, res) => {
         console.error("❌ Webhook error stack:", err.stack);
         return res.status(200).json({ ok: true, error: err.message });
     }
-}; 0) {
-                    tokenData.usdValue = tokenData.amount * price;
-                } else {
-                    tokenData.usdValue = price; // Default to 1 token
-                }
-            }
-        }
-
-        console.log('🎯 Final UNCX token data:', tokenData);
-        return tokenData;
-
-    } catch (error) {
-        console.error('❌ UNCX extraction error:', error);
-        console.error('❌ Stack:', error.stack);
-        return tokenData;
-    }
-}
-
-// DEBUG: Enhanced GoPlus extraction with detailed logging
-async function extractGoPlusDataDebug(lockLog, lockResult) {
-    console.log('🛡️ === GOPLUS EXTRACTION DEBUG ===');
-    console.log('🛡️ Lock log received:', JSON.stringify(lockLog, null, 2));
-    
-    const tokenData = {
-        address: null,
-        symbol: 'UNKNOWN',
-        amount: 0,
-        priceAtLock: 0,
-        usdValue: 0
-    };
-
-    try {
-        if (lockLog.decoded && lockLog.decoded.inputs) {
-            const inputs = lockLog.decoded.inputs;
-            console.log('📋 GoPlus decoded inputs:', inputs);
-
-            for (const input of inputs) {
-                if (input.name === 'token' && input.value) {
-                    tokenData.address = input.value.toLowerCase();
-                    console.log('🎯 Found GoPlus token address:', tokenData.address);
-                }
-                if (input.name === 'amount' && input.value) {
-                    tokenData.amount = parseFloat(input.value) / Math.pow(10, 18);
-                    console.log('📊 Found GoPlus token amount:', tokenData.amount);
-                }
-            }
-        }
-
-        if (tokenData.address) {
-            const chainId = getChainIdFromName(lockResult.chain.name);
-            console.log('🌐 Getting GoPlus token info for chain:', chainId);
-            
-            const [symbol, price] = await Promise.all([
-                getTokenSymbolFromContract(tokenData.address, chainId),
-                getTokenPrice(tokenData.address, chainId)
-            ]);
-            
-            console.log('🏷️ GoPlus Symbol result:', symbol);
-            console.log('💰 GoPlus Price result:', price);
-            
-            if (symbol) {
-                tokenData.symbol = symbol;
-            }
-            
-            if (price) {
-                tokenData.priceAtLock = price;
-                if (tokenData.amount >
+};
