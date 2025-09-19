@@ -5,82 +5,35 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
 
+// -----------------------------------------
+// Enhanced Token Data Extraction Functions
+// -----------------------------------------
+
 // Enhanced token symbol fetching using multiple methods
 async function getTokenSymbolFromContract(tokenAddress, chainId) {
     try {
-        console.log(`Fetching symbol for ${tokenAddress} on chain ${chainId}`);
+        console.log(`🏷️ Fetching symbol for ${tokenAddress} on chain ${chainId}`);
         
-        // Method 1: Check if this is an LP token and get proper LP symbol
-        const lpInfo = await analyzeLPToken(tokenAddress, chainId);
-        if (lpInfo.isLP && lpInfo.token0Symbol && lpInfo.token1Symbol) {
-            const lpSymbol = `${lpInfo.token0Symbol}/${lpInfo.token1Symbol}`;
-            console.log(`LP symbol constructed: ${lpSymbol}`);
-            return lpSymbol;
-        }
-        
-        // Method 2: Try CoinGecko token info API for regular tokens
+        // Method 1: Try CoinGecko token info API
         const coinGeckoSymbol = await getSymbolFromCoinGecko(tokenAddress, chainId);
         if (coinGeckoSymbol) {
-            console.log(`Symbol from CoinGecko: ${coinGeckoSymbol}`);
+            console.log(`✅ Symbol from CoinGecko: ${coinGeckoSymbol}`);
             return coinGeckoSymbol;
         }
         
-        // Method 3: Try DexScreener for token symbol
-        const dexScreenerSymbol = await getDexScreenerTokenSymbol(tokenAddress, chainId);
-        if (dexScreenerSymbol) {
-            console.log(`Symbol from DexScreener: ${dexScreenerSymbol}`);
-            return dexScreenerSymbol;
+        // Method 2: For LP tokens, try to construct symbol
+        const lpSymbol = await constructLPSymbol(tokenAddress, chainId);
+        if (lpSymbol) {
+            console.log(`✅ Constructed LP symbol: ${lpSymbol}`);
+            return lpSymbol;
         }
         
-        // Method 4: Fallback - if LP analysis detected it as LP but couldn't get symbols
-        if (lpInfo.isLP) {
-            console.log(`Detected as LP but no symbols found, using generic LP`);
-            return 'LP-TOKEN';
-        }
-        
-        console.log(`Could not get symbol for ${tokenAddress}`);
+        console.log(`❌ Could not get symbol for ${tokenAddress}`);
         return 'UNKNOWN';
         
     } catch (error) {
-        console.error('Error getting token symbol:', error);
+        console.error('❌ Error getting token symbol:', error);
         return 'UNKNOWN';
-    }
-}
-
-// Get token symbol from DexScreener
-async function getDexScreenerTokenSymbol(tokenAddress, chainId) {
-    try {
-        const chainMap = {
-            '1': 'ethereum',
-            '56': 'bsc',
-            '137': 'polygon',
-            '8453': 'base'
-        };
-
-        const chain = chainMap[chainId];
-        if (!chain) return null;
-
-        const response = await axios.get(
-            `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`,
-            { timeout: 5000 }
-        );
-
-        const pairs = response.data?.pairs?.filter(pair => pair.chainId === chain);
-        if (pairs && pairs.length > 0) {
-            const bestPair = pairs.sort((a, b) => 
-                parseFloat(b.liquidity?.usd || 0) - parseFloat(a.liquidity?.usd || 0)
-            )[0];
-            
-            if (bestPair.baseToken?.address?.toLowerCase() === tokenAddress.toLowerCase()) {
-                return bestPair.baseToken.symbol;
-            }
-            if (bestPair.quoteToken?.address?.toLowerCase() === tokenAddress.toLowerCase()) {
-                return bestPair.quoteToken.symbol;
-            }
-        }
-        return null;
-    } catch (error) {
-        return null;
     }
 }
 
@@ -110,127 +63,54 @@ async function getSymbolFromCoinGecko(tokenAddress, chainId) {
     }
 }
 
-// Enhanced LP token analysis and price fetching
-async function getTokenPrice(tokenAddress, chainId) {
+// Construct LP token symbol
+async function constructLPSymbol(tokenAddress, chainId) {
     try {
-        console.log(`Fetching price for ${tokenAddress} on chain ${chainId}`);
+        // This is a simplified version - in practice you'd need to:
+        // 1. Check if it's an LP token by calling pair contract
+        // 2. Get token0 and token1 addresses
+        // 3. Get symbols for both tokens
+        // 4. Construct "TOKEN0/TOKEN1 LP"
         
-        const lpInfo = await analyzeLPToken(tokenAddress, chainId);
-        if (lpInfo.isLP) {
-            console.log(`Detected LP token: ${lpInfo.token0Symbol}/${lpInfo.token1Symbol}`);
-            
-            if (lpInfo.token0Address && lpInfo.token1Address) {
-                console.log(`Getting prices for underlying tokens...`);
-                const [token0Price, token1Price] = await Promise.all([
-                    getRegularTokenPrice(lpInfo.token0Address, chainId),
-                    getRegularTokenPrice(lpInfo.token1Address, chainId)
-                ]);
-                
-                if (token0Price || token1Price) {
-                    const price = token0Price || token1Price;
-                    console.log(`LP underlying token price: ${price}`);
-                    return price;
-                }
-            }
-            
-            console.log(`LP token detected but no underlying token prices available`);
-            return null;
-        }
-        
-        return await getRegularTokenPrice(tokenAddress, chainId);
+        // For now, return a generic LP symbol
+        return 'LP-TOKEN';
         
     } catch (error) {
-        console.error(`Error fetching price for ${tokenAddress}:`, error.message);
         return null;
     }
 }
 
-// Analyze if token is an LP token and get underlying tokens
-async function analyzeLPToken(tokenAddress, chainId) {
+// Enhanced price fetching with multiple sources
+async function getTokenPrice(tokenAddress, chainId) {
     try {
-        console.log(`Analyzing if ${tokenAddress} is an LP token...`);
-        
-        const dexScreenerLP = await checkDexScreenerForLP(tokenAddress, chainId);
-        if (dexScreenerLP.isLP) {
-            return dexScreenerLP;
-        }
-        
-        return { isLP: false };
-        
-    } catch (error) {
-        console.log(`Error analyzing LP token: ${error.message}`);
-        return { isLP: false };
-    }
-}
+        console.log(`💰 Fetching price for ${tokenAddress} on chain ${chainId}`);
 
-// Check DexScreener to see if this address appears as a pair contract
-async function checkDexScreenerForLP(tokenAddress, chainId) {
-    try {
-        const chainMap = {
-            '1': 'ethereum',
-            '56': 'bsc',
-            '137': 'polygon',
-            '8453': 'base'
-        };
-
-        const chain = chainMap[chainId];
-        if (!chain) return { isLP: false };
-
-        const response = await axios.get(
-            `https://api.dexscreener.com/latest/dex/pairs/${chain}/${tokenAddress}`,
-            { timeout: 5000 }
-        );
-
-        if (response.data?.pair) {
-            const pair = response.data.pair;
-            console.log(`Found LP pair: ${pair.baseToken?.symbol}/${pair.quoteToken?.symbol}`);
-            
-            return {
-                isLP: true,
-                token0Address: pair.baseToken?.address,
-                token1Address: pair.quoteToken?.address,
-                token0Symbol: pair.baseToken?.symbol,
-                token1Symbol: pair.quoteToken?.symbol,
-                pairInfo: pair
-            };
-        }
-
-        return { isLP: false };
-        
-    } catch (error) {
-        console.log(`DexScreener LP check failed: ${error.message}`);
-        return { isLP: false };
-    }
-}
-
-// Get price for regular (non-LP) tokens
-async function getRegularTokenPrice(tokenAddress, chainId) {
-    try {
-        console.log(`Fetching regular token price for ${tokenAddress}`);
-
+        // Try DexScreener first (best for new tokens)
         const dexScreenerPrice = await getDexScreenerPrice(tokenAddress, chainId);
         if (dexScreenerPrice) {
-            console.log(`Price from DexScreener: ${dexScreenerPrice}`);
+            console.log(`✅ Price from DexScreener: ${dexScreenerPrice}`);
             return dexScreenerPrice;
         }
         
+        // Try DexTools second
         const dexToolsPrice = await getDexToolsPrice(tokenAddress, chainId);
         if (dexToolsPrice) {
-            console.log(`Price from DexTools: ${dexToolsPrice}`);
+            console.log(`✅ Price from DexTools: ${dexToolsPrice}`);
             return dexToolsPrice;
         }
         
+        // Fallback to CoinGecko for established tokens
         const coinGeckoPrice = await getCoinGeckoPrice(tokenAddress, chainId);
         if (coinGeckoPrice) {
-            console.log(`Price from CoinGecko: ${coinGeckoPrice}`);
+            console.log(`✅ Price from CoinGecko: ${coinGeckoPrice}`);
             return coinGeckoPrice;
         }
         
-        console.log(`No price data found for ${tokenAddress}`);
+        console.log(`❌ No price data found for ${tokenAddress}`);
         return null;
         
     } catch (error) {
-        console.error(`Error fetching regular token price: ${error.message}`);
+        console.error(`❌ Error fetching price for ${tokenAddress}:`, error.message);
         return null;
     }
 }
@@ -248,19 +128,26 @@ async function getDexScreenerPrice(tokenAddress, chainId) {
         const chain = chainMap[chainId];
         if (!chain) return null;
 
+        console.log(`🔍 Checking DexScreener for ${tokenAddress} on ${chain}`);
+
         const response = await axios.get(
             `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`,
             { timeout: 5000 }
         );
 
+        // DexScreener returns multiple pairs, get the one with highest liquidity
         const pairs = response.data?.pairs?.filter(pair => 
             pair.chainId === chain && pair.priceUsd
         );
 
         if (pairs && pairs.length > 0) {
+            // Sort by liquidity and take the highest
             const bestPair = pairs.sort((a, b) => 
                 parseFloat(b.liquidity?.usd || 0) - parseFloat(a.liquidity?.usd || 0)
             )[0];
+            
+            console.log(`📊 DexScreener found pair: ${bestPair.baseToken?.symbol}/${bestPair.quoteToken?.symbol}`);
+            console.log(`📊 Liquidity: ${bestPair.liquidity?.usd || 'N/A'}`);
             
             return parseFloat(bestPair.priceUsd);
         }
@@ -273,7 +160,7 @@ async function getDexScreenerPrice(tokenAddress, chainId) {
     }
 }
 
-// DexTools API - second option
+// DexTools API - second option with improved endpoint
 async function getDexToolsPrice(tokenAddress, chainId) {
     try {
         const chainMap = {
@@ -286,6 +173,9 @@ async function getDexToolsPrice(tokenAddress, chainId) {
         const chain = chainMap[chainId];
         if (!chain) return null;
 
+        console.log(`🔍 Checking DexTools for ${tokenAddress} on ${chain}`);
+
+        // Try DexTools public API first
         try {
             const response = await axios.get(
                 `https://www.dextools.io/shared/data/pair?chain=${chain}&address=${tokenAddress}`,
@@ -300,11 +190,33 @@ async function getDexToolsPrice(tokenAddress, chainId) {
 
             if (response.data?.data?.price) {
                 const price = parseFloat(response.data.data.price);
-                console.log(`DexTools found price: ${price}`);
+                console.log(`📊 DexTools found price: ${price}`);
                 return price;
             }
         } catch (apiError) {
             console.log(`DexTools API failed: ${apiError.message}`);
+        }
+
+        // Fallback: Try DexTools token info endpoint
+        try {
+            const tokenResponse = await axios.get(
+                `https://www.dextools.io/shared/data/token?chain=${chain}&address=${tokenAddress}`,
+                { 
+                    timeout: 5000,
+                    headers: {
+                        'Accept': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (compatible; DexBot/1.0)'
+                    }
+                }
+            );
+
+            if (tokenResponse.data?.data?.price) {
+                const price = parseFloat(tokenResponse.data.data.price);
+                console.log(`📊 DexTools token endpoint found price: ${price}`);
+                return price;
+            }
+        } catch (tokenError) {
+            console.log(`DexTools token endpoint failed: ${tokenError.message}`);
         }
 
         return null;
@@ -328,6 +240,8 @@ async function getCoinGeckoPrice(tokenAddress, chainId) {
         const platform = platformMap[chainId];
         if (!platform) return null;
 
+        console.log(`🔍 Checking CoinGecko for ${tokenAddress} on ${platform}`);
+
         const response = await axios.get(
             `https://api.coingecko.com/api/v3/simple/token_price/${platform}`,
             {
@@ -342,7 +256,7 @@ async function getCoinGeckoPrice(tokenAddress, chainId) {
         const price = response.data[tokenAddress.toLowerCase()]?.usd;
         
         if (price) {
-            console.log(`CoinGecko found price: ${price}`);
+            console.log(`📊 CoinGecko found price: ${price}`);
             return price;
         }
 
@@ -364,9 +278,11 @@ function getChainIdFromName(chainName) {
     return chainMap[chainName] || '1';
 }
 
-// Enhanced Team Finance extraction
+// DEBUG: Enhanced Team Finance extraction with detailed logging
 async function extractTeamFinanceDataDebug(lockLog, lockResult, eventMap) {
-    console.log('TEAM FINANCE EXTRACTION DEBUG');
+    console.log('🏢 === TEAM FINANCE EXTRACTION DEBUG ===');
+    console.log('🏢 Lock log received:', JSON.stringify(lockLog, null, 2));
+    console.log('🏢 Event map keys:', Object.keys(eventMap));
     
     const tokenData = {
         address: null,
@@ -377,42 +293,149 @@ async function extractTeamFinanceDataDebug(lockLog, lockResult, eventMap) {
     };
 
     try {
+        // Method 1: Try event definition decoding
         if (eventMap[lockLog.topic0]) {
             const eventInfo = eventMap[lockLog.topic0];
-            console.log('Found event definition:', eventInfo);
+            console.log('📋 Found event definition:', eventInfo);
             
-            if (eventInfo.name === 'DepositNFT' || eventInfo.name === 'Deposit') {
+            // For Team Finance events, check if it's DepositNFT or Deposit
+            if (eventInfo.name === 'DepositNFT') {
+                console.log('🎯 Processing DepositNFT - token address should be in topic1');
+                
+                // For DepositNFT: topic1 = tokenAddress (indexed), topic2 = withdrawalAddress (indexed)
                 if (lockLog.topic1) {
                     const tokenAddress = '0x' + lockLog.topic1.slice(-40).toLowerCase();
-                    console.log(`Token address from topic1: ${tokenAddress}`);
+                    console.log(`✅ DepositNFT token address from topic1: ${tokenAddress}`);
                     
                     if (tokenAddress !== '0x0000000000000000000000000000000000000000') {
                         tokenData.address = tokenAddress;
+                        
+                        // Also extract amount from data chunks if available
+                        if (lockLog.data) {
+                            const data = lockLog.data.slice(2);
+                            const chunks = [];
+                            for (let i = 0; i < data.length; i += 64) {
+                                chunks.push('0x' + data.slice(i, i + 64));
+                            }
+                            console.log('📊 DepositNFT data chunks:', chunks);
+                            
+                            // Chunk[1] should be the amount for DepositNFT
+                            if (chunks.length > 1) {
+                                try {
+                                    const amountWei = BigInt(chunks[1]);
+                                    tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+                                    console.log(`✅ DepositNFT amount extracted: ${tokenData.amount}`);
+                                } catch (error) {
+                                    console.log('⚠️ Could not parse amount from DepositNFT');
+                                }
+                            }
+                        }
                     }
                 }
+                
+            } else if (eventInfo.name === 'Deposit') {
+                console.log('🎯 Processing Deposit - token address should be in topic1');
+                
+                // For Deposit: topic1 = tokenAddress (indexed), topic2 = withdrawalAddress (indexed)
+                if (lockLog.topic1) {
+                    const tokenAddress = '0x' + lockLog.topic1.slice(-40).toLowerCase();
+                    console.log(`✅ Deposit token address from topic1: ${tokenAddress}`);
+                    
+                    if (tokenAddress !== '0x0000000000000000000000000000000000000000') {
+                        tokenData.address = tokenAddress;
+                        
+                        // Also extract amount from data chunks
+                        if (lockLog.data) {
+                            const data = lockLog.data.slice(2);
+                            const chunks = [];
+                            for (let i = 0; i < data.length; i += 64) {
+                                chunks.push('0x' + data.slice(i, i + 64));
+                            }
+                            console.log('📊 Deposit data chunks:', chunks);
+                            
+                            // Chunk[1] should be the amount for Deposit
+                            if (chunks.length > 1) {
+                                try {
+                                    const amountWei = BigInt(chunks[1]);
+                                    tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+                                    console.log(`✅ Deposit amount extracted: ${tokenData.amount}`);
+                                } catch (error) {
+                                    console.log('⚠️ Could not parse amount from Deposit');
+                                }
+                            }
+                        }
+                    }
+                }
+                
+            } else {
+                console.log('🔍 Processing other Team Finance event - trying data chunks');
+                
+                if (lockLog.data) {
+                    console.log('📊 Raw data length:', lockLog.data.length);
+                    console.log('📊 Raw data:', lockLog.data);
+                    
+                    const data = lockLog.data.slice(2);
+                    const chunks = [];
+                    
+                    for (let i = 0; i < data.length; i += 64) {
+                        chunks.push('0x' + data.slice(i, i + 64));
+                    }
+                    
+                    console.log('📊 Data chunks:', chunks);
+                    
+                    // Try to find token address in chunks
+                    chunks.forEach((chunk, index) => {
+                        if (chunk.length === 66) {
+                            const possibleAddress = '0x' + chunk.slice(-40).toLowerCase();
+                            console.log(`🔍 Chunk[${index}] possible address: ${possibleAddress}`);
+                            
+                            if (possibleAddress !== '0x0000000000000000000000000000000000000000' && 
+                                possibleAddress.match(/^0x[a-f0-9]{40}$/)) {
+                                console.log(`✅ Valid address found in chunk[${index}]: ${possibleAddress}`);
+                                if (!tokenData.address) tokenData.address = possibleAddress;
+                            }
+                        }
+                    });
+                }
             }
+        } else {
+            console.log('❌ No event definition found for topic0:', lockLog.topic0);
         }
 
-        // Fallback: Try topics parsing
+        // Method 2: Try topics parsing
         if (!tokenData.address && lockLog.topics && lockLog.topics.length > 1) {
+            console.log('🔍 Trying topics parsing...');
+            console.log('🔍 Available topics:', lockLog.topics);
+            
             for (let i = 1; i < lockLog.topics.length; i++) {
                 const topic = lockLog.topics[i];
                 if (topic && topic.startsWith('0x') && topic.length === 66) {
                     const possibleAddress = '0x' + topic.slice(-40).toLowerCase();
+                    console.log(`🔍 Topic[${i}] possible address: ${possibleAddress}`);
                     
                     if (possibleAddress !== '0x0000000000000000000000000000000000000000' && 
                         possibleAddress.match(/^0x[a-f0-9]{40}$/)) {
+                        console.log(`✅ Valid address from topic[${i}]: ${possibleAddress}`);
                         if (!tokenData.address) tokenData.address = possibleAddress;
                     }
                 }
             }
         }
 
+        console.log('🎯 Team Finance extracted address:', tokenData.address);
+        
         if (tokenData.address) {
             const chainId = getChainIdFromName(lockResult.chain.name);
+            console.log('🌐 Getting token info for chain:', chainId);
             
+            // Get symbol and price with detailed logging
+            console.log('🏷️ Fetching symbol...');
             const symbol = await getTokenSymbolFromContract(tokenData.address, chainId);
+            console.log('🏷️ Symbol result:', symbol);
+            
+            console.log('💰 Fetching price...');
             const price = await getTokenPrice(tokenData.address, chainId);
+            console.log('💰 Price result:', price);
             
             if (symbol && symbol !== 'UNKNOWN') {
                 tokenData.symbol = symbol;
@@ -420,22 +443,25 @@ async function extractTeamFinanceDataDebug(lockLog, lockResult, eventMap) {
             
             if (price) {
                 tokenData.priceAtLock = price;
-                tokenData.usdValue = price;
+                tokenData.usdValue = price; // Assuming 1 token for now
             }
         }
 
-        console.log('Final Team Finance token data:', tokenData);
+        console.log('🎯 Final Team Finance token data:', tokenData);
         return tokenData;
 
     } catch (error) {
-        console.error('Team Finance extraction error:', error);
+        console.error('❌ Team Finance extraction error:', error);
+        console.error('❌ Stack:', error.stack);
         return tokenData;
     }
 }
 
-// Enhanced UNCX extraction
+// DEBUG: Enhanced UNCX extraction with detailed logging
 async function extractUNCXDataDebug(lockLog, lockResult, eventMap) {
-    console.log('UNCX EXTRACTION DEBUG');
+    console.log('🔒 === UNCX EXTRACTION DEBUG ===');
+    console.log('🔒 Lock log received:', JSON.stringify(lockLog, null, 2));
+    console.log('🔒 Event map keys:', Object.keys(eventMap));
     
     const tokenData = {
         address: null,
@@ -446,25 +472,58 @@ async function extractUNCXDataDebug(lockLog, lockResult, eventMap) {
     };
 
     try {
-        // Fallback data extraction
-        if (lockLog.data) {
+        // Method 1: Try event definition decoding
+        if (eventMap[lockLog.topic0]) {
+            const eventInfo = eventMap[lockLog.topic0];
+            console.log('📋 Found UNCX event definition:', eventInfo);
+            
+            if (eventInfo.name === 'onNewLock' && lockLog.data) {
+                console.log('📊 Processing onNewLock event...');
+                const decodedData = await decodeOnNewLockEvent(lockLog, eventInfo, lockResult);
+                if (decodedData.address) {
+                    Object.assign(tokenData, decodedData);
+                }
+            } else if (eventInfo.name === 'onDeposit' && lockLog.data) {
+                console.log('📊 Processing onDeposit event...');
+                const decodedData = await decodeOnDepositEvent(lockLog, eventInfo, lockResult);
+                if (decodedData.address) {
+                    Object.assign(tokenData, decodedData);
+                }
+            }
+        } else {
+            console.log('❌ No UNCX event definition found for topic0:', lockLog.topic0);
+        }
+
+        // Method 2: Fallback data extraction
+        if (!tokenData.address && lockLog.data) {
+            console.log('🔍 Trying fallback UNCX data extraction...');
             const data = lockLog.data.slice(2);
             if (data.length >= 128) {
                 const lpTokenSlot = '0x' + data.slice(64, 128);
                 const possibleAddress = '0x' + lpTokenSlot.slice(-40).toLowerCase();
+                console.log('🔍 Fallback LP token extraction:', possibleAddress);
                 
                 if (possibleAddress !== '0x0000000000000000000000000000000000000000' && 
                     possibleAddress.match(/^0x[a-f0-9]{40}$/)) {
                     tokenData.address = possibleAddress;
+                    console.log('✅ Fallback address found:', possibleAddress);
                 }
             }
         }
 
+        console.log('🎯 UNCX extracted address:', tokenData.address);
+        
         if (tokenData.address) {
             const chainId = getChainIdFromName(lockResult.chain.name);
+            console.log('🌐 Getting UNCX token info for chain:', chainId);
             
-            const symbol = await getTokenSymbolFromContract(tokenData.address, chainId);
-            const price = await getTokenPrice(tokenData.address, chainId);
+            const [symbol, price] = await Promise.all([
+                getTokenSymbolFromContract(tokenData.address, chainId),
+                getTokenPrice(tokenData.address, chainId)
+            ]);
+            
+            console.log('🏷️ UNCX Symbol result:', symbol);
+            console.log('💰 UNCX Price result:', price);
             
             if (symbol && symbol !== 'UNKNOWN') {
                 tokenData.symbol = symbol;
@@ -474,22 +533,28 @@ async function extractUNCXDataDebug(lockLog, lockResult, eventMap) {
             
             if (price) {
                 tokenData.priceAtLock = price;
-                tokenData.usdValue = price;
+                if (tokenData.amount > 0) {
+                    tokenData.usdValue = tokenData.amount * price;
+                } else {
+                    tokenData.usdValue = price; // Default to 1 token
+                }
             }
         }
 
-        console.log('Final UNCX token data:', tokenData);
+        console.log('🎯 Final UNCX token data:', tokenData);
         return tokenData;
 
     } catch (error) {
-        console.error('UNCX extraction error:', error);
+        console.error('❌ UNCX extraction error:', error);
+        console.error('❌ Stack:', error.stack);
         return tokenData;
     }
 }
 
-// Enhanced GoPlus extraction
+// DEBUG: Enhanced GoPlus extraction with detailed logging
 async function extractGoPlusDataDebug(lockLog, lockResult) {
-    console.log('GOPLUS EXTRACTION DEBUG');
+    console.log('🛡️ === GOPLUS EXTRACTION DEBUG ===');
+    console.log('🛡️ Lock log received:', JSON.stringify(lockLog, null, 2));
     
     const tokenData = {
         address: null,
@@ -502,22 +567,31 @@ async function extractGoPlusDataDebug(lockLog, lockResult) {
     try {
         if (lockLog.decoded && lockLog.decoded.inputs) {
             const inputs = lockLog.decoded.inputs;
+            console.log('📋 GoPlus decoded inputs:', inputs);
 
             for (const input of inputs) {
                 if (input.name === 'token' && input.value) {
                     tokenData.address = input.value.toLowerCase();
+                    console.log('🎯 Found GoPlus token address:', tokenData.address);
                 }
                 if (input.name === 'amount' && input.value) {
                     tokenData.amount = parseFloat(input.value) / Math.pow(10, 18);
+                    console.log('📊 Found GoPlus token amount:', tokenData.amount);
                 }
             }
         }
 
         if (tokenData.address) {
             const chainId = getChainIdFromName(lockResult.chain.name);
+            console.log('🌐 Getting GoPlus token info for chain:', chainId);
             
-            const symbol = await getTokenSymbolFromContract(tokenData.address, chainId);
-            const price = await getTokenPrice(tokenData.address, chainId);
+            const [symbol, price] = await Promise.all([
+                getTokenSymbolFromContract(tokenData.address, chainId),
+                getTokenPrice(tokenData.address, chainId)
+            ]);
+            
+            console.log('🏷️ GoPlus Symbol result:', symbol);
+            console.log('💰 GoPlus Price result:', price);
             
             if (symbol) {
                 tokenData.symbol = symbol;
@@ -531,20 +605,126 @@ async function extractGoPlusDataDebug(lockLog, lockResult) {
             }
         }
 
-        console.log('Final GoPlus token data:', tokenData);
+        console.log('🎯 Final GoPlus token data:', tokenData);
         return tokenData;
 
     } catch (error) {
-        console.error('GoPlus extraction error:', error);
+        console.error('❌ GoPlus extraction error:', error);
         return tokenData;
     }
 }
 
-// Main token extraction function
+// Decode onNewLock event data
+async function decodeOnNewLockEvent(lockLog, eventInfo, lockResult) {
+    const tokenData = {
+        address: null,
+        symbol: 'UNKNOWN',
+        amount: 0,
+        priceAtLock: 0,
+        usdValue: 0
+    };
+
+    try {
+        console.log('🎯 Decoding onNewLock event...');
+        // onNewLock(uint256 lockID, address lpToken, address owner, uint256 amount, uint256 lockDate, uint256 unlockDate, uint16 countryCode)
+        const data = lockLog.data.slice(2); // Remove 0x prefix
+        const chunks = [];
+        
+        // Split into 32-byte chunks
+        for (let i = 0; i < data.length; i += 64) {
+            chunks.push('0x' + data.slice(i, i + 64));
+        }
+        
+        console.log('📊 onNewLock data chunks:', chunks);
+        
+        if (chunks.length >= 6) {
+            // Extract data based on event signature
+            const lockID = parseInt(chunks[0], 16);
+            const lpTokenHex = chunks[1];
+            const ownerHex = chunks[2];
+            const amountHex = chunks[3];
+            const lockDateHex = chunks[4];
+            const unlockDateHex = chunks[5];
+            
+            // Extract LP token address (remove padding)
+            tokenData.address = '0x' + lpTokenHex.slice(-40).toLowerCase();
+            
+            // Extract amount (convert from wei, assuming 18 decimals)
+            const amountWei = BigInt(amountHex);
+            tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+            
+            console.log('🎯 Decoded onNewLock:');
+            console.log('  - Lock ID:', lockID);
+            console.log('  - LP Token:', tokenData.address);
+            console.log('  - Amount:', tokenData.amount);
+            console.log('  - Lock Date:', new Date(parseInt(lockDateHex, 16) * 1000));
+            console.log('  - Unlock Date:', new Date(parseInt(unlockDateHex, 16) * 1000));
+        }
+        
+    } catch (error) {
+        console.error('❌ Error decoding onNewLock:', error);
+    }
+    
+    return tokenData;
+}
+
+// Decode onDeposit event data
+async function decodeOnDepositEvent(lockLog, eventInfo, lockResult) {
+    const tokenData = {
+        address: null,
+        symbol: 'UNKNOWN',
+        amount: 0,
+        priceAtLock: 0,
+        usdValue: 0
+    };
+
+    try {
+        console.log('🎯 Decoding onDeposit event...');
+        // onDeposit(address lpToken, address user, uint256 amount, uint256 lockDate, uint256 unlockDate)
+        const data = lockLog.data.slice(2);
+        const chunks = [];
+        
+        for (let i = 0; i < data.length; i += 64) {
+            chunks.push('0x' + data.slice(i, i + 64));
+        }
+        
+        console.log('📊 onDeposit data chunks:', chunks);
+        
+        if (chunks.length >= 5) {
+            const lpTokenHex = chunks[0];
+            const userHex = chunks[1];
+            const amountHex = chunks[2];
+            const lockDateHex = chunks[3];
+            const unlockDateHex = chunks[4];
+            
+            tokenData.address = '0x' + lpTokenHex.slice(-40).toLowerCase();
+            
+            const amountWei = BigInt(amountHex);
+            tokenData.amount = Number(amountWei) / Math.pow(10, 18);
+            
+            console.log('🎯 Decoded onDeposit:');
+            console.log('  - LP Token:', tokenData.address);
+            console.log('  - User:', '0x' + userHex.slice(-40));
+            console.log('  - Amount:', tokenData.amount);
+        }
+        
+    } catch (error) {
+        console.error('❌ Error decoding onDeposit:', error);
+    }
+    
+    return tokenData;
+}
+
+// DEBUG: Enhanced main token extraction function with detailed logging
 async function extractTokenDataFromLogs(body, lockResult, eventMap) {
-    console.log('TOKEN EXTRACTION DEBUG START');
+    console.log('🔍 === TOKEN EXTRACTION DEBUG START ===');
+    console.log('📦 Body keys:', Object.keys(body));
+    console.log('📦 LockResult:', JSON.stringify(lockResult, null, 2));
+    console.log('📦 EventMap entries:', Object.keys(eventMap).length);
+    console.log('📦 EventMap:', eventMap);
     
     const logs = Array.isArray(body.logs) ? body.logs : [];
+    console.log('📋 Total logs to process:', logs.length);
     
     let tokenData = {
         address: null,
@@ -555,45 +735,84 @@ async function extractTokenDataFromLogs(body, lockResult, eventMap) {
     };
 
     try {
+        // Log each log in detail
+        logs.forEach((log, index) => {
+            console.log(`🔍 Log[${index}]:`, {
+                address: log.address,
+                topics: log.topics,
+                data: log.data?.slice(0, 100) + '...', // Truncate for readability
+                topic0: log.topics?.[0],
+                eventName: log.name || log.eventName,
+                decoded: log.decoded
+            });
+        });
+
+        // Find the lock log by matching the contract address from the detection
         const lockLog = logs.find(log => {
             const addr = (log.address || "").toLowerCase();
-            return KNOWN_LOCKERS.has(addr);
+            const isKnown = KNOWN_LOCKERS.has(addr);
+            console.log(`🔍 Checking log with address ${addr} - Known locker: ${isKnown}`);
+            return isKnown;
         });
 
         if (!lockLog) {
-            console.log('NO LOCK LOG FOUND FOR TOKEN EXTRACTION');
+            console.log('❌ NO LOCK LOG FOUND FOR TOKEN EXTRACTION');
+            console.log('📋 Known lockers:', Array.from(KNOWN_LOCKERS));
+            console.log('📋 Log addresses found:', logs.map(l => l.address?.toLowerCase()));
             return tokenData;
         }
 
+        console.log('✅ FOUND LOCK LOG FOR EXTRACTION:', JSON.stringify(lockLog, null, 2));
+
+        // Extract token data based on platform
         const contractAddr = (lockLog.address || "").toLowerCase();
+        console.log('🏢 Contract address:', contractAddr);
+        console.log('🏢 Is Team Finance:', TEAM_FINANCE_CONTRACTS.has(contractAddr));
+        console.log('🏢 Is UNCX:', !!UNCX_CONTRACTS[contractAddr]);
+        console.log('🏢 Is GoPlus:', !!GOPLUS_CONTRACTS[contractAddr]);
         
         if (TEAM_FINANCE_CONTRACTS.has(contractAddr)) {
+            console.log('🏢 Processing as Team Finance...');
             tokenData = await extractTeamFinanceDataDebug(lockLog, lockResult, eventMap);
         } else if (UNCX_CONTRACTS[contractAddr]) {
+            console.log('🔒 Processing as UNCX...');
             tokenData = await extractUNCXDataDebug(lockLog, lockResult, eventMap);
         } else if (GOPLUS_CONTRACTS[contractAddr]) {
+            console.log('🛡️ Processing as GoPlus...');
             tokenData = await extractGoPlusDataDebug(lockLog, lockResult);
+        } else {
+            console.log('❌ Unknown contract type for address:', contractAddr);
         }
 
-        console.log('FINAL TOKEN EXTRACTION RESULT:', tokenData);
+        console.log('🎯 FINAL TOKEN EXTRACTION RESULT:', tokenData);
+        console.log('🔍 === TOKEN EXTRACTION DEBUG END ===');
+        
         return tokenData;
 
     } catch (error) {
-        console.error('Error in token extraction:', error);
+        console.error('❌ Error in token extraction:', error);
+        console.error('❌ Stack trace:', error.stack);
         return tokenData;
     }
 }
 
-// Dashboard integration
+// -----------------------------------------
+// Enhanced Dashboard Integration Function
+// -----------------------------------------
 async function sendToDashboard(lockResult, body, tokenData, req) {
     try {
+        console.log('📊 === SENDING TO DASHBOARD ===');
+        
         const dashboardData = {
             ...lockResult,
+            // Extract additional data from the webhook body if available
             contractAddress: body.logs?.find(log => log.address)?.address,
-            eventName: 'Lock Created',
+            eventName: 'Lock Created', // Simplified event name
             blockNumber: body.txs?.[0]?.blockNumber,
             gasUsed: body.txs?.[0]?.gasUsed,
             timestamp: new Date().toISOString(),
+            
+            // Enhanced token data
             tokenAddress: tokenData.address,
             tokenSymbol: tokenData.symbol,
             tokenAmount: tokenData.amount,
@@ -601,7 +820,11 @@ async function sendToDashboard(lockResult, body, tokenData, req) {
             usdValueAtLock: tokenData.usdValue
         };
         
+        // Fixed dashboard URL using request host
         const dashboardUrl = `https://${req.headers.host}/api/locks`;
+        
+        console.log('📊 Dashboard URL:', dashboardUrl);
+        console.log('📊 Sending to dashboard:', JSON.stringify(dashboardData, null, 2));
 
         const response = await axios.post(dashboardUrl, dashboardData, {
             timeout: 10000,
@@ -610,17 +833,31 @@ async function sendToDashboard(lockResult, body, tokenData, req) {
             }
         });
         
-        console.log('Lock sent to dashboard:', lockResult.txHash);
+        console.log('✅ Lock sent to dashboard:', lockResult.txHash);
         return response.data;
         
     } catch (error) {
-        console.error('Failed to send to dashboard:', error.message);
+        console.error('❌ Failed to send to dashboard:', error.message);
+        if (error.response) {
+            console.error('Dashboard response status:', error.response.status);
+            console.error('Dashboard response data:', error.response.data);
+        }
         return null;
     }
 }
 
-// Shared Detection Logic
+// -----------------------------------------
+// Shared Detection Logic (Inline)
+// -----------------------------------------
 const sentTxs = new Set();
+
+// Simple cleanup - just limit the set size instead of time-based tracking
+function cleanupSentTxs() {
+    if (sentTxs.size > 1000) {
+        sentTxs.clear(); // Simple clear when too large
+        console.log(`🧹 Cleared sentTxs set (was over 1000 entries)`);
+    }
+}
 
 function toDecChainId(maybeHex) {
     if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
@@ -690,17 +927,10 @@ const GOPLUS_EVENT_TOPICS = {
 
 const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCase();
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3";
-
-// ENHANCED: PBTC detection constants
+// Enhanced PBTC detection constants
 const PBTC_WALLET = "0xaD7c34923db6f834Ad48474Acc4E0FC2476bF23f".toLowerCase();
+const PBTC_PROXY = "0xd95a366a2c887033ba71743c6342e2df470e9db9".toLowerCase();
 const PBTC_DEPLOY_METHOD_ID = "0xce84399a";
-const PBTC_RELATED_ADDRESSES = new Set([
-    "0xad7c34923db6f834ad48474acc4e0fc2476bf23f",
-    "0xd95a366a2c887033ba71743c6342e2df470e9db9",
-]);
-const PBTC_TARGET_CONTRACTS = new Set([
-    "0x7feccc5e213b61a825cc5f417343e013509c8746",
-]);
 
 const GOPLUS_CONTRACT_SET = new Set(Object.keys(GOPLUS_CONTRACTS).map(s => s.toLowerCase()));
 
@@ -730,47 +960,21 @@ function detectGoPlusLock(log, eventMap) {
     return null;
 }
 
-// ENHANCED: PBTC detection function
+// Simple and reliable PBTC detection function
 function isPbtcTransaction(body, fromAddress, chainId) {
-    console.log(`PBTC Detection - Chain ID: ${chainId}, From: ${fromAddress}`);
-    
+    // Only check on Base chain
     if (chainId !== "8453") {
-        console.log(`Not Base chain, skipping PBTC detection`);
         return false;
     }
     
-    // Check 1: Known PBTC proxy address
-    if (fromAddress === "0xd95a366a2c887033ba71743c6342e2df470e9db9") {
-        console.log(`PBTC detected via known proxy address`);
+    // Check 1: Known PBTC addresses
+    if (fromAddress === PBTC_WALLET || fromAddress === PBTC_PROXY) {
+        console.log(`PBTC detected via from address: ${fromAddress}`);
         return true;
     }
     
-    // Check 2: PBTC target contract in transactions
+    // Check 2: PBTC deploy method
     const txs = Array.isArray(body.txs) ? body.txs : [];
-    for (const tx of txs) {
-        if (tx.to && tx.to.toLowerCase() === "0x7feccc5e213b61a825cc5f417343e013509c8746") {
-            console.log(`PBTC detected via target contract: ${tx.to}`);
-            return true;
-        }
-    }
-    
-    // Check 3: Adshares involvement
-    const logs = Array.isArray(body.logs) ? body.logs : [];
-    for (const log of logs) {
-        const logStr = JSON.stringify(log).toLowerCase();
-        if (logStr.includes('adshares') || logStr.includes('"ads"')) {
-            console.log(`PBTC detected via Adshares involvement`);
-            return true;
-        }
-    }
-    
-    // Check 4: Original PBTC wallet check
-    if (fromAddress === PBTC_WALLET) {
-        console.log(`PBTC detected via original wallet`);
-        return true;
-    }
-    
-    // Check 5: PBTC deploy method
     for (const tx of txs) {
         if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
             console.log(`PBTC detected via deploy method`);
@@ -778,53 +982,27 @@ function isPbtcTransaction(body, fromAddress, chainId) {
         }
     }
     
-    console.log(`PBTC not detected`);
+    // Check 3: Adshares involvement (additional indicator)
+    const bodyStr = JSON.stringify(body).toLowerCase();
+    if ((bodyStr.includes('adshares') || bodyStr.includes('"ads"')) && fromAddress === PBTC_PROXY) {
+        console.log(`PBTC detected via Adshares + proxy pattern`);
+        return true;
+    }
+    
     return false;
 }
 
 function detectLock(body) {
-    console.log('LOCK DETECTION DEBUG START');
+    console.log('🔍 === LOCK DETECTION DEBUG START ===');
+    console.log('📦 Received body for detection:', JSON.stringify(body, null, 2));
     
     if (!body.chainId) return null;
     const chainId = toDecChainId(body.chainId);
     const chain = CHAINS[chainId] || { name: chainId, explorer: "" };
     const logs = Array.isArray(body.logs) ? body.logs : [];
 
-    console.log(`Processing chain: ${chain.name} (${chainId})`);
-    console.log(`Processing ${logs.length} logs`);
-
-    // ENHANCED: PBTC PRE-CHECK
-    let forcePBTC = false;
-    if (chainId === "8453") {
-        const txs = Array.isArray(body.txs) ? body.txs : [];
-        const allFromAddresses = [
-            body.txs?.[0]?.from,
-            body.from,
-            ...txs.map(tx => tx.from),
-            ...logs.map(log => log.from)
-        ].filter(addr => addr).map(addr => addr.toLowerCase());
-
-        console.log(`PBTC PRE-CHECK - All from addresses:`, allFromAddresses);
-
-        if (allFromAddresses.includes("0xd95a366a2c887033ba71743c6342e2df470e9db9")) {
-            forcePBTC = true;
-            console.log(`PBTC FORCE-DETECTED via from address match`);
-        }
-
-        const allToAddresses = txs.map(tx => tx.to).filter(addr => addr).map(addr => addr.toLowerCase());
-        if (allToAddresses.includes("0x7feccc5e213b61a825cc5f417343e013509c8746")) {
-            forcePBTC = true;
-            console.log(`PBTC FORCE-DETECTED via to address match`);
-        }
-
-        const bodyStr = JSON.stringify(body).toLowerCase();
-        if (bodyStr.includes('adshares') || bodyStr.includes('"ads"')) {
-            forcePBTC = true;
-            console.log(`PBTC FORCE-DETECTED via Adshares involvement`);
-        }
-
-        console.log(`Final PBTC force decision: ${forcePBTC}`);
-    }
+    console.log(`🌐 Processing chain: ${chain.name} (${chainId})`);
+    console.log(`🪵 Processing ${logs.length} logs`);
 
     const eventMap = {};
     if (Array.isArray(body.abi)) {
@@ -835,22 +1013,22 @@ function detectLock(body) {
                 eventMap[hash] = { name: ev.name, signature: sig, inputs: ev.inputs };
             }
         });
-        console.log(`Built eventMap with ${Object.keys(eventMap).length} entries`);
+        console.log(`🗺️ Built eventMap with ${Object.keys(eventMap).length} entries`);
+        console.log('🗺️ Event signatures:', Object.values(eventMap).map(e => e.signature));
     }
 
     let lockLog = null;
     let isAdshareSource = false;
-    const fromAddress = (body.txs?.[0]?.from || "").toLowerCase();
     
-    // Set isPbtcInitiated based on force decision or original detection
-    let isPbtcInitiated = forcePBTC;
-    if (!isPbtcInitiated) {
-        isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
-    }
+    // Simple from address extraction
+    const fromAddress = (body.txs?.[0]?.from || body.from || "").toLowerCase();
+    console.log(`👤 From address: ${fromAddress}`);
+    
+    // Simple PBTC detection
+    const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
+    console.log(`🅿️ PBTC initiated: ${isPbtcInitiated}`);
 
-    console.log(`From address: ${fromAddress}`);
-    console.log(`PBTC initiated: ${isPbtcInitiated}`);
-
+    // Process logs to find lock events
     for (let i = 0; i < logs.length; i++) {
         const l = logs[i];
         const addr = (l.address || "").toLowerCase();
@@ -873,47 +1051,53 @@ function detectLock(body) {
         const isLockEvent = LOCK_EVENTS.has(ev);
         const isGoPlusContract = GOPLUS_CONTRACT_SET.has(addr);
         
-        console.log(`Log[${i}]: addr=${addr}, event=${ev || "N/A"}, known=${isKnown}, lockEvent=${isLockEvent}`);
+        console.log(`Log[${i}]: addr=${addr}`);
+        console.log(`  ↳ topic0=${l.topic0}`);
+        console.log(`  ↳ event=${ev || "N/A"}`);
+        console.log(`  ↳ known=${isKnown}, lockEvent=${isLockEvent}, goplus=${isGoPlusContract}`);
         
-        // ENHANCED: Priority 1 - If PBTC transaction, prioritize any lock event
+        // Simple priority: PBTC first, then standard detection
         if (isPbtcInitiated && isKnown && isLockEvent) {
             lockLog = { ...l, resolvedEvent: ev };
-            console.log(`PBTC priority lock detected: ${ev} from ${addr}`);
-            break; // Exit early for PBTC to prevent override
-        }
-        
-        // Priority 2: Standard detection for non-PBTC transactions
-        if (!isPbtcInitiated && isKnown && isLockEvent && !isGoPlusContract) {
+            console.log(`✅ PBTC lock detected: ${ev} from ${addr}`);
+            break; // Exit early for PBTC
+        } else if (!isPbtcInitiated && isKnown && isLockEvent && !isGoPlusContract) {
             lockLog = { ...l, resolvedEvent: ev };
-            console.log(`Standard lock detected: ${ev} from ${addr}`);
-        }
-        
-        // Priority 3: GoPlus detection (only if no other lock found)
-        if (!lockLog && isGoPlusContract) {
+            console.log(`✅ Standard lock detected: ${ev} from ${addr}`);
+        } else if (!lockLog && isGoPlusContract) {
             const goPlusLock = detectGoPlusLock(l, eventMap);
             if (goPlusLock) {
                 lockLog = goPlusLock;
-                console.log(`GoPlus lock detected: ${goPlusLock.resolvedEvent} from ${addr}`);
+                console.log(`✅ GoPlus lock detected: ${goPlusLock.resolvedEvent} from ${addr}`);
             }
         }
         
         if (addr === ADS_FUND_FACTORY && l.topic0 === TOKEN_CREATED_TOPIC) {
             isAdshareSource = true;
-            console.log("Detected Adshares factory source");
+            console.log("📂 Detected Adshares factory source");
         }
     }
 
     if (!lockLog) {
-        console.log("No lock event found in detection");
+        console.log("❌ No lock event found in detection");
+        console.log('🔍 === LOCK DETECTION DEBUG END ===');
         return null;
     }
 
-    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
-    if (!txHash || sentTxs.has(txHash)) {
-        console.log(`Skipping duplicate or missing txHash: ${txHash}`);
+    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash || body.hash;
+    if (!txHash) {
+        console.log(`❌ No txHash found`);
         return null;
     }
+    
+    // Simple duplicate check
+    if (sentTxs.has(txHash)) {
+        console.log(`⏩ Skipping duplicate txHash: ${txHash}`);
+        return null;
+    }
+    
     sentTxs.add(txHash);
+    cleanupSentTxs();
 
     const eventName = lockLog.resolvedEvent || "Unknown";
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
@@ -922,92 +1106,107 @@ function detectLock(body) {
     const isGoPlus = GOPLUS_CONTRACTS[lockerAddr];
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
 
-    // ENHANCED: PBTC source assignment
+    // Simple source assignment - PBTC takes priority
     let source;
     if (isPbtcInitiated) {
         source = "PBTC";
-        console.log(`Source FORCED to PBTC`);
+        console.log(`✅ Source: PBTC (PBTC transaction detected)`);
     } else if (isTeamFinance) {
         source = isAdshareSource ? "Team Finance (via Adshare)" : "Team Finance";
+        console.log(`✅ Source: ${source}`);
     } else if (isGoPlus) {
         source = "GoPlus";
+        console.log(`✅ Source: GoPlus`);
     } else if (uncxVersion) {
         source = "UNCX";
+        console.log(`✅ Source: UNCX`);
     } else {
         source = "Unknown";
+        console.log(`⚠️ Source: Unknown`);
     }
 
-    // ENHANCED: PBTC type assignment
+    // Simple type assignment - PBTC is always V3
     let type = "Unknown";
     if (isPbtcInitiated) {
-        type = "V3 Token"; // PBTC is ALWAYS V3
-        console.log(`Type FORCED to V3 Token (PBTC detected)`);
+        type = "V3 Token"; // PBTC is always V3
+        console.log(`✅ Type: V3 Token (PBTC)`);
     } else if (isTeamFinance) {
         type = eventName === "Deposit" ? "V2 Token"
             : eventName === "DepositNFT" ? "V3 Token"
             : eventName === "onLock" ? "V3 Token"
             : eventName === "LiquidityLocked" ? "V4 Token"
             : "Unknown";
+        console.log(`✅ Type: ${type} (Team Finance)`);
     } else if (uncxVersion) {
         type = uncxVersion.includes("V2") ? uncxVersion : `${uncxVersion} Token`;
+        console.log(`✅ Type: ${type} (UNCX)`);
     } else if (isGoPlus) {
         type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
+        console.log(`✅ Type: ${type} (GoPlus)`);
     }
 
-    console.log(`Final detection result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
-    console.log('LOCK DETECTION DEBUG END');
+    console.log(`🎯 Final result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
+    console.log('🔍 === LOCK DETECTION DEBUG END ===');
+
+    return { chain, type, source, explorerLink, txHash, eventMap };
+}.name}, Source=${source}, Type=${type}, Event=${eventName}`);
+    console.log('🔍 === LOCK DETECTION DEBUG END ===');
 
     return { chain, type, source, explorerLink, txHash, eventMap };
 }
 
-// Main Webhook Handler
+// -----------------------------------------
+// Main Webhook Handler with Enhanced Debug Logging
+// -----------------------------------------
 module.exports = async (req, res) => {
-    console.log('WEBHOOK HANDLER DEBUG START');
-    console.log('Method:', req.method);
+    console.log('🚀 === WEBHOOK HANDLER DEBUG START ===');
+    console.log('🌐 Method:', req.method);
+    console.log('🌐 Headers:', JSON.stringify(req.headers, null, 2));
     
     try {
         if (req.method !== "POST") return res.status(200).json({ ok: true });
         
         const body = req.body || {};
-        console.log("Full incoming body keys:", Object.keys(body));
+        console.log("📦 Full incoming body keys:", Object.keys(body));
+        console.log("📦 Full incoming body:", JSON.stringify(body, null, 2));
         
         if (!body.chainId) {
-            console.log('No chainId found - validation ping');
+            console.log('❌ No chainId found - validation ping');
             return res.status(200).json({ ok: true, note: "Validation ping" });
         }
         
         const lockResult = detectLock(body);
         
         if (!lockResult) {
-            console.log("No matching lock detected");
+            console.log("❌ No matching lock detected");
             return res.status(200).json({ ok: true, note: "No lock event detected" });
         }
         
         const { chain, type, source, explorerLink, txHash, eventMap } = lockResult;
         
-        console.log(`Lock detected: Chain=${chain.name}, Source=${source}, Type=${type}, TxHash=${txHash}`);
+        console.log(`✅ Lock detected: Chain=${chain.name}, Source=${source}, Type=${type}, TxHash=${txHash}`);
         
-        // Extract enhanced token data
-        console.log('Starting token data extraction...');
+        // Extract enhanced token data with eventMap and enhanced debugging
+        console.log('💎 Starting token data extraction...');
         const tokenData = await extractTokenDataFromLogs(body, lockResult, eventMap);
-        console.log('Enhanced token data extracted:', tokenData);
+        console.log('💎 Enhanced token data extracted:', tokenData);
         
-        // Send to dashboard
-        console.log('Sending to dashboard...');
+        // Send to dashboard with enhanced data and request object
+        console.log('📊 Sending to dashboard...');
         const dashboardResult = await sendToDashboard(lockResult, body, tokenData, req);
-        console.log('Dashboard result:', dashboardResult ? 'Success' : 'Failed');
+        console.log('📊 Dashboard result:', dashboardResult ? 'Success' : 'Failed');
         
-        // FIXED: Handle Telegram notification with proper token check
+        // Handle Telegram notification with improved message format
         let telegramSent = false;
         
-        console.log("TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
-        console.log("TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_GROUP_CHAT_ID);
+        console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
+        console.log("📌 TELEGRAM_GROUP_CHAT_ID exists:", !!TELEGRAM_GROUP_CHAT_ID);
         
         if (!TELEGRAM_TOKEN || !TELEGRAM_GROUP_CHAT_ID) {
-            console.log("Missing Telegram credentials");
+            console.log("❌ Missing Telegram credentials");
         } else {
             try {
-                console.log('Preparing Telegram message...');
+                console.log('📱 Preparing Telegram message...');
                 
                 const parts = [
                     "🔒 *New Lock Created*",
@@ -1016,13 +1215,14 @@ module.exports = async (req, res) => {
                     `🔖 Source: ${source}`
                 ];
 
-                // FIXED: Only add token information if meaningful data exists
-                if (tokenData.symbol && tokenData.symbol !== 'UNKNOWN') {
-                    parts.push(`🪙 Token: ${tokenData.symbol}`);
+                // Only add token information if it's meaningful
+                // Skip LP-TOKEN and zero amounts to clean up the message
+                if (tokenData.symbol !== 'UNKNOWN' && 
+                    tokenData.symbol !== 'LP-TOKEN' && 
+                    tokenData.amount > 0) {
                     
-                    if (tokenData.amount > 0) {
-                        parts.push(`💰 Amount: ${tokenData.amount.toLocaleString()} tokens`);
-                    }
+                    parts.push(`🪙 Token: ${tokenData.symbol}`);
+                    parts.push(`💰 Amount: ${tokenData.amount.toLocaleString()} tokens`);
                     
                     if (tokenData.priceAtLock > 0) {
                         parts.push(`💵 Price: ${tokenData.priceAtLock.toFixed(6)}`);
@@ -1032,12 +1232,11 @@ module.exports = async (req, res) => {
                         parts.push(`💸 USD Value: ${tokenData.usdValue.toLocaleString()}`);
                     }
                 }
-                // FIXED: No "Token: UNKNOWN" line will be shown
 
                 parts.push(`🔗 [View Transaction](${explorerLink})`);
                 const message = parts.join("\n");
                 
-                console.log('Telegram message prepared:', message);
+                console.log('📱 Telegram message prepared:', message);
                 
                 await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
                     chat_id: TELEGRAM_GROUP_CHAT_ID,
@@ -1047,12 +1246,12 @@ module.exports = async (req, res) => {
                     disable_web_page_preview: true,
                 });
                 
-                console.log("Enhanced Telegram message sent successfully");
+                console.log("📤 Enhanced Telegram message sent successfully");
                 telegramSent = true;
                 
             } catch (telegramError) {
-                console.error("Telegram sending error:", telegramError.message);
-                console.error("Telegram error details:", telegramError.response?.data);
+                console.error("❌ Telegram sending error:", telegramError.message);
+                console.error("❌ Telegram error details:", telegramError.response?.data);
             }
         }
         
@@ -1072,15 +1271,15 @@ module.exports = async (req, res) => {
             }
         };
         
-        console.log('WEBHOOK HANDLER FINAL RESULT');
-        console.log('Final response:', JSON.stringify(finalResult, null, 2));
-        console.log('WEBHOOK HANDLER DEBUG END');
+        console.log('🚀 === WEBHOOK HANDLER FINAL RESULT ===');
+        console.log('🎯 Final response:', JSON.stringify(finalResult, null, 2));
+        console.log('🚀 === WEBHOOK HANDLER DEBUG END ===');
         
         return res.status(200).json(finalResult);
         
     } catch (err) {
-        console.error("Webhook error:", err.message);
-        console.error("Webhook error stack:", err.stack);
+        console.error("❌ Webhook error:", err.message);
+        console.error("❌ Webhook error stack:", err.stack);
         return res.status(200).json({ ok: true, error: err.message });
     }
 };
