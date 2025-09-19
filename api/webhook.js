@@ -14,18 +14,32 @@ async function getTokenSymbolFromContract(tokenAddress, chainId) {
     try {
         console.log(`🏷️ Fetching symbol for ${tokenAddress} on chain ${chainId}`);
         
-        // Method 1: Try CoinGecko token info API
+        // Method 1: Check if this is an LP token and get proper LP symbol
+        const lpInfo = await analyzeLPToken(tokenAddress, chainId);
+        if (lpInfo.isLP && lpInfo.token0Symbol && lpInfo.token1Symbol) {
+            const lpSymbol = `${lpInfo.token0Symbol}/${lpInfo.token1Symbol}`;
+            console.log(`✅ LP symbol constructed: ${lpSymbol}`);
+            return lpSymbol;
+        }
+        
+        // Method 2: Try CoinGecko token info API for regular tokens
         const coinGeckoSymbol = await getSymbolFromCoinGecko(tokenAddress, chainId);
         if (coinGeckoSymbol) {
             console.log(`✅ Symbol from CoinGecko: ${coinGeckoSymbol}`);
             return coinGeckoSymbol;
         }
         
-        // Method 2: For LP tokens, try to construct symbol
-        const lpSymbol = await constructLPSymbol(tokenAddress, chainId);
-        if (lpSymbol) {
-            console.log(`✅ Constructed LP symbol: ${lpSymbol}`);
-            return lpSymbol;
+        // Method 3: Try DexScreener for token symbol
+        const dexScreenerSymbol = await getDexScreenerTokenSymbol(tokenAddress, chainId);
+        if (dexScreenerSymbol) {
+            console.log(`✅ Symbol from DexScreener: ${dexScreenerSymbol}`);
+            return dexScreenerSymbol;
+        }
+        
+        // Method 4: Fallback - if LP analysis detected it as LP but couldn't get symbols
+        if (lpInfo.isLP) {
+            console.log(`⚠️ Detected as LP but no symbols found, using generic LP`);
+            return 'LP-TOKEN';
         }
         
         console.log(`❌ Could not get symbol for ${tokenAddress}`);
@@ -34,6 +48,48 @@ async function getTokenSymbolFromContract(tokenAddress, chainId) {
     } catch (error) {
         console.error('❌ Error getting token symbol:', error);
         return 'UNKNOWN';
+    }
+}
+
+// Get token symbol from DexScreener
+async function getDexScreenerTokenSymbol(tokenAddress, chainId) {
+    try {
+        const chainMap = {
+            '1': 'ethereum',
+            '56': 'bsc',
+            '137': 'polygon',
+            '8453': 'base'
+        };
+
+        const chain = chainMap[chainId];
+        if (!chain) return null;
+
+        const response = await axios.get(
+            `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`,
+            { timeout: 5000 }
+        );
+
+        const pairs = response.data?.pairs?.filter(pair => pair.chainId === chain);
+        if (pairs && pairs.length > 0) {
+            // Get the pair with highest liquidity
+            const bestPair = pairs.sort((a, b) => 
+                parseFloat(b.liquidity?.usd || 0) - parseFloat(a.liquidity?.usd || 0)
+            )[0];
+            
+            // Check if baseToken matches our address
+            if (bestPair.baseToken?.address?.toLowerCase() === tokenAddress.toLowerCase()) {
+                return bestPair.baseToken.symbol;
+            }
+            // Check if quoteToken matches our address  
+            if (bestPair.quoteToken?.address?.toLowerCase() === tokenAddress.toLowerCase()) {
+                return bestPair.quoteToken.symbol;
+            }
+        }
+
+        return null;
+        
+    } catch (error) {
+        return null;
     }
 }
 
@@ -80,10 +136,128 @@ async function constructLPSymbol(tokenAddress, chainId) {
     }
 }
 
-// Enhanced price fetching with multiple sources
+// Enhanced LP token analysis and price fetching
 async function getTokenPrice(tokenAddress, chainId) {
     try {
         console.log(`💰 Fetching price for ${tokenAddress} on chain ${chainId}`);
+        
+        // First, check if this is an LP token
+        const lpInfo = await analyzeLPToken(tokenAddress, chainId);
+        if (lpInfo.isLP) {
+            console.log(`🏊 Detected LP token: ${lpInfo.token0Symbol}/${lpInfo.token1Symbol}`);
+            
+            // For LP tokens, try to get price for the underlying tokens
+            if (lpInfo.token0Address && lpInfo.token1Address) {
+                console.log(`🔍 Getting prices for underlying tokens...`);
+                const [token0Price, token1Price] = await Promise.all([
+                    getRegularTokenPrice(lpInfo.token0Address, chainId),
+                    getRegularTokenPrice(lpInfo.token1Address, chainId)
+                ]);
+                
+                if (token0Price || token1Price) {
+                    // Use the price of whichever token we found
+                    const price = token0Price || token1Price;
+                    console.log(`✅ LP underlying token price: ${price} (from ${token0Price ? lpInfo.token0Symbol : lpInfo.token1Symbol})`);
+                    return price;
+                }
+            }
+            
+            // If no underlying token prices found, return 0 but don't log as error
+            console.log(`⚠️ LP token detected but no underlying token prices available`);
+            return null;
+        }
+        
+        // If not LP token, get regular price
+        return await getRegularTokenPrice(tokenAddress, chainId);
+        
+    } catch (error) {
+        console.error(`❌ Error fetching price for ${tokenAddress}:`, error.message);
+        return null;
+    }
+}
+
+// Analyze if token is an LP token and get underlying tokens
+async function analyzeLPToken(tokenAddress, chainId) {
+    try {
+        console.log(`🔬 Analyzing if ${tokenAddress} is an LP token...`);
+        
+        // Try to detect LP token by checking DexScreener for pairs where this token is the pair address
+        const dexScreenerLP = await checkDexScreenerForLP(tokenAddress, chainId);
+        if (dexScreenerLP.isLP) {
+            return dexScreenerLP;
+        }
+        
+        // If DexScreener doesn't show it as LP, check if address pattern suggests LP
+        if (await isLikelyLPToken(tokenAddress)) {
+            return {
+                isLP: true,
+                token0Address: null,
+                token1Address: null,
+                token0Symbol: 'TOKEN0',
+                token1Symbol: 'TOKEN1'
+            };
+        }
+        
+        return { isLP: false };
+        
+    } catch (error) {
+        console.log(`❌ Error analyzing LP token: ${error.message}`);
+        return { isLP: false };
+    }
+}
+
+// Check DexScreener to see if this address appears as a pair contract
+async function checkDexScreenerForLP(tokenAddress, chainId) {
+    try {
+        const chainMap = {
+            '1': 'ethereum',
+            '56': 'bsc',
+            '137': 'polygon',
+            '8453': 'base'
+        };
+
+        const chain = chainMap[chainId];
+        if (!chain) return { isLP: false };
+
+        // Search for pairs where this token address might be the pair contract
+        const response = await axios.get(
+            `https://api.dexscreener.com/latest/dex/pairs/${chain}/${tokenAddress}`,
+            { timeout: 5000 }
+        );
+
+        if (response.data?.pair) {
+            const pair = response.data.pair;
+            console.log(`🏊 Found LP pair: ${pair.baseToken?.symbol}/${pair.quoteToken?.symbol}`);
+            
+            return {
+                isLP: true,
+                token0Address: pair.baseToken?.address,
+                token1Address: pair.quoteToken?.address,
+                token0Symbol: pair.baseToken?.symbol,
+                token1Symbol: pair.quoteToken?.symbol,
+                pairInfo: pair
+            };
+        }
+
+        return { isLP: false };
+        
+    } catch (error) {
+        console.log(`❌ DexScreener LP check failed: ${error.message}`);
+        return { isLP: false };
+    }
+}
+
+// Check if address pattern suggests it's an LP token
+async function isLikelyLPToken(tokenAddress) {
+    // Most LP tokens have predictable characteristics
+    // This is a heuristic check
+    return false; // For now, rely on DexScreener check
+}
+
+// Get price for regular (non-LP) tokens
+async function getRegularTokenPrice(tokenAddress, chainId) {
+    try {
+        console.log(`💰 Fetching regular token price for ${tokenAddress}`);
 
         // Try DexScreener first (best for new tokens)
         const dexScreenerPrice = await getDexScreenerPrice(tokenAddress, chainId);
@@ -110,7 +284,7 @@ async function getTokenPrice(tokenAddress, chainId) {
         return null;
         
     } catch (error) {
-        console.error(`❌ Error fetching price for ${tokenAddress}:`, error.message);
+        console.error(`❌ Error fetching regular token price: ${error.message}`);
         return null;
     }
 }
@@ -851,14 +1025,6 @@ async function sendToDashboard(lockResult, body, tokenData, req) {
 // -----------------------------------------
 const sentTxs = new Set();
 
-// Simple cleanup - just limit the set size instead of time-based tracking
-function cleanupSentTxs() {
-    if (sentTxs.size > 1000) {
-        sentTxs.clear(); // Simple clear when too large
-        console.log(`🧹 Cleared sentTxs set (was over 1000 entries)`);
-    }
-}
-
 function toDecChainId(maybeHex) {
     if (typeof maybeHex === "string" && maybeHex.startsWith("0x")) {
         return String(parseInt(maybeHex, 16));
@@ -927,9 +1093,7 @@ const GOPLUS_EVENT_TOPICS = {
 
 const ADS_FUND_FACTORY = "0xe38ed031b2bb2ef8f3a3d4a4eaf5bf4dd889e0be".toLowerCase();
 const TOKEN_CREATED_TOPIC = "0x98921a5f40ea8e12813fad8a9f6b602aa9ed159a0f0e552428b96c24de1994f3";
-// Enhanced PBTC detection constants
 const PBTC_WALLET = "0xaD7c34923db6f834Ad48474Acc4E0FC2476bF23f".toLowerCase();
-const PBTC_PROXY = "0xd95a366a2c887033ba71743c6342e2df470e9db9".toLowerCase();
 const PBTC_DEPLOY_METHOD_ID = "0xce84399a";
 
 const GOPLUS_CONTRACT_SET = new Set(Object.keys(GOPLUS_CONTRACTS).map(s => s.toLowerCase()));
@@ -960,33 +1124,16 @@ function detectGoPlusLock(log, eventMap) {
     return null;
 }
 
-// Simple and reliable PBTC detection function
 function isPbtcTransaction(body, fromAddress, chainId) {
-    // Only check on Base chain
-    if (chainId !== "8453") {
-        return false;
-    }
-    
-    // Check 1: Known PBTC addresses
-    if (fromAddress === PBTC_WALLET || fromAddress === PBTC_PROXY) {
-        console.log(`PBTC detected via from address: ${fromAddress}`);
+    if (fromAddress === PBTC_WALLET && chainId === "8453") {
         return true;
     }
     
-    // Check 2: PBTC deploy method
     const txs = Array.isArray(body.txs) ? body.txs : [];
     for (const tx of txs) {
         if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
-            console.log(`PBTC detected via deploy method`);
             return true;
         }
-    }
-    
-    // Check 3: Adshares involvement (additional indicator)
-    const bodyStr = JSON.stringify(body).toLowerCase();
-    if ((bodyStr.includes('adshares') || bodyStr.includes('"ads"')) && fromAddress === PBTC_PROXY) {
-        console.log(`PBTC detected via Adshares + proxy pattern`);
-        return true;
     }
     
     return false;
@@ -1019,16 +1166,12 @@ function detectLock(body) {
 
     let lockLog = null;
     let isAdshareSource = false;
-    
-    // Simple from address extraction
-    const fromAddress = (body.txs?.[0]?.from || body.from || "").toLowerCase();
-    console.log(`👤 From address: ${fromAddress}`);
-    
-    // Simple PBTC detection
+    const fromAddress = (body.txs?.[0]?.from || "").toLowerCase();
     const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
+
+    console.log(`👤 From address: ${fromAddress}`);
     console.log(`🅿️ PBTC initiated: ${isPbtcInitiated}`);
 
-    // Process logs to find lock events
     for (let i = 0; i < logs.length; i++) {
         const l = logs[i];
         const addr = (l.address || "").toLowerCase();
@@ -1056,15 +1199,12 @@ function detectLock(body) {
         console.log(`  ↳ event=${ev || "N/A"}`);
         console.log(`  ↳ known=${isKnown}, lockEvent=${isLockEvent}, goplus=${isGoPlusContract}`);
         
-        // Simple priority: PBTC first, then standard detection
-        if (isPbtcInitiated && isKnown && isLockEvent) {
-            lockLog = { ...l, resolvedEvent: ev };
-            console.log(`✅ PBTC lock detected: ${ev} from ${addr}`);
-            break; // Exit early for PBTC
-        } else if (!isPbtcInitiated && isKnown && isLockEvent && !isGoPlusContract) {
+        if (isKnown && isLockEvent && !isGoPlusContract) {
             lockLog = { ...l, resolvedEvent: ev };
             console.log(`✅ Standard lock detected: ${ev} from ${addr}`);
-        } else if (!lockLog && isGoPlusContract) {
+        }
+        
+        if (!lockLog && isGoPlusContract) {
             const goPlusLock = detectGoPlusLock(l, eventMap);
             if (goPlusLock) {
                 lockLog = goPlusLock;
@@ -1084,20 +1224,12 @@ function detectLock(body) {
         return null;
     }
 
-    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash || body.hash;
-    if (!txHash) {
-        console.log(`❌ No txHash found`);
+    const txHash = lockLog.transactionHash || body.txs?.[0]?.hash;
+    if (!txHash || sentTxs.has(txHash)) {
+        console.log(`⏩ Skipping duplicate or missing txHash: ${txHash}`);
         return null;
     }
-    
-    // Simple duplicate check
-    if (sentTxs.has(txHash)) {
-        console.log(`⏩ Skipping duplicate txHash: ${txHash}`);
-        return null;
-    }
-    
     sentTxs.add(txHash);
-    cleanupSentTxs();
 
     const eventName = lockLog.resolvedEvent || "Unknown";
     const explorerLink = chain.explorer ? `${chain.explorer}${txHash}` : txHash;
@@ -1106,50 +1238,35 @@ function detectLock(body) {
     const isGoPlus = GOPLUS_CONTRACTS[lockerAddr];
     const uncxVersion = UNCX_CONTRACTS[lockerAddr];
 
-    // Simple source assignment - PBTC takes priority
     let source;
     if (isPbtcInitiated) {
         source = "PBTC";
-        console.log(`✅ Source: PBTC (PBTC transaction detected)`);
     } else if (isTeamFinance) {
         source = isAdshareSource ? "Team Finance (via Adshare)" : "Team Finance";
-        console.log(`✅ Source: ${source}`);
     } else if (isGoPlus) {
         source = "GoPlus";
-        console.log(`✅ Source: GoPlus`);
     } else if (uncxVersion) {
         source = "UNCX";
-        console.log(`✅ Source: UNCX`);
     } else {
         source = "Unknown";
-        console.log(`⚠️ Source: Unknown`);
     }
 
-    // Simple type assignment - PBTC is always V3
     let type = "Unknown";
     if (isPbtcInitiated) {
-        type = "V3 Token"; // PBTC is always V3
-        console.log(`✅ Type: V3 Token (PBTC)`);
+        type = "V3 Token";
     } else if (isTeamFinance) {
         type = eventName === "Deposit" ? "V2 Token"
             : eventName === "DepositNFT" ? "V3 Token"
             : eventName === "onLock" ? "V3 Token"
             : eventName === "LiquidityLocked" ? "V4 Token"
             : "Unknown";
-        console.log(`✅ Type: ${type} (Team Finance)`);
     } else if (uncxVersion) {
         type = uncxVersion.includes("V2") ? uncxVersion : `${uncxVersion} Token`;
-        console.log(`✅ Type: ${type} (UNCX)`);
     } else if (isGoPlus) {
         type = isGoPlus.includes("V2") ? isGoPlus : `${isGoPlus} Token`;
-        console.log(`✅ Type: ${type} (GoPlus)`);
     }
 
-    console.log(`🎯 Final result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
-    console.log('🔍 === LOCK DETECTION DEBUG END ===');
-
-    return { chain, type, source, explorerLink, txHash, eventMap };
-}.name}, Source=${source}, Type=${type}, Event=${eventName}`);
+    console.log(`🎯 Final detection result: Chain=${chain.name}, Source=${source}, Type=${type}, Event=${eventName}`);
     console.log('🔍 === LOCK DETECTION DEBUG END ===');
 
     return { chain, type, source, explorerLink, txHash, eventMap };
@@ -1196,7 +1313,7 @@ module.exports = async (req, res) => {
         const dashboardResult = await sendToDashboard(lockResult, body, tokenData, req);
         console.log('📊 Dashboard result:', dashboardResult ? 'Success' : 'Failed');
         
-        // Handle Telegram notification with improved message format
+        // Handle Telegram notification
         let telegramSent = false;
         
         console.log("📌 TELEGRAM_TOKEN exists:", !!TELEGRAM_TOKEN);
@@ -1215,14 +1332,13 @@ module.exports = async (req, res) => {
                     `🔖 Source: ${source}`
                 ];
 
-                // Only add token information if it's meaningful
-                // Skip LP-TOKEN and zero amounts to clean up the message
-                if (tokenData.symbol !== 'UNKNOWN' && 
-                    tokenData.symbol !== 'LP-TOKEN' && 
-                    tokenData.amount > 0) {
-                    
+                // Add token information if available
+                if (tokenData.symbol !== 'UNKNOWN') {
                     parts.push(`🪙 Token: ${tokenData.symbol}`);
-                    parts.push(`💰 Amount: ${tokenData.amount.toLocaleString()} tokens`);
+                    
+                    if (tokenData.amount > 0) {
+                        parts.push(`💰 Amount: ${tokenData.amount.toLocaleString()} tokens`);
+                    }
                     
                     if (tokenData.priceAtLock > 0) {
                         parts.push(`💵 Price: ${tokenData.priceAtLock.toFixed(6)}`);
@@ -1231,6 +1347,8 @@ module.exports = async (req, res) => {
                     if (tokenData.usdValue > 0) {
                         parts.push(`💸 USD Value: ${tokenData.usdValue.toLocaleString()}`);
                     }
+                } else {
+                    parts.push(`⚠️ Token: ${tokenData.symbol} (Data extraction issue)`);
                 }
 
                 parts.push(`🔗 [View Transaction](${explorerLink})`);
