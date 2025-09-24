@@ -264,10 +264,11 @@ function detectLock(body) {
     source = "Unknown";
   }
 
-  // Updated type logic
+  // Updated type logic with PBTC debug logging
   let type = "Unknown";
   if (isPbtcInitiated) {
     type = "V3 Token";
+    console.log(`DEBUG: PBTC detected, setting type to V3 Token. Current type: ${type}`);
   } else if (isTeamFinance) {
     type = eventName === "Deposit" ? "V2 Token"
       : eventName === "DepositNFT" ? "V3 Token"
@@ -318,13 +319,13 @@ module.exports = async (req, res) => {
       return res.status(200).json({ ok: true, note: "Missing Telegram credentials" });
     }
     
-    // Build and send Telegram message
+    // Build and send Telegram message with proper emoji formatting
     const parts = [
-      "New Lock Created",
-      `Chain: ${chain.name}`,
-      `Type: ${type}`,
-      `Source: ${source}`,
-      `View Transaction: ${explorerLink}`
+      "🔒 **New Lock Created**",
+      `🌐 Chain: ${chain.name}`,
+      `📌 Type: ${type}`,
+      `🔖 Source: ${source}`,
+      `🔗 [View Transaction](${explorerLink})`
     ];
     const message = parts.join("\n");
     
