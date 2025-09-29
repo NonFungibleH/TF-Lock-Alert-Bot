@@ -51,7 +51,7 @@ const PROFESSIONAL_CTAS = [
   `Chat DeFi tips in our Telegram: ${COMMUNITY_LINK}`,
   `Track scams with us on Telegram: ${COMMUNITY_LINK}`,
   `Get live insights in Telegram: ${COMMUNITY_LINK}`,
-  `Join 5k+ hunters on Telegram: ${COMMUNITY_LINK}`
+  `Join a community of lock hunters on Telegram: ${COMMUNITY_LINK}`
 ];
 
 module.exports = async (req, res) => {
