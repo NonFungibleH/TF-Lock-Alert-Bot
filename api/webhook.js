@@ -135,19 +135,39 @@ function detectGoPlusLock(log, eventMap) {
 }
 
 function isPbtcTransaction(body, fromAddress, chainId) {
+  console.log("=== PBTC Detection Debug ===");
+  console.log(`From address: ${fromAddress}`);
+  console.log(`Chain ID: ${chainId}`);
+  console.log(`PBTC wallet: ${PBTC_WALLET}`);
+  console.log(`Match from: ${fromAddress === PBTC_WALLET}`);
+  console.log(`Match chain: ${chainId === "8453"}`);
+  
   // Check 1: Transaction initiated by PBTC wallet on Base chain
   if (fromAddress === PBTC_WALLET && chainId === "8453") {
+    console.log("✓ PBTC detected via wallet address");
     return true;
   }
   
   // Check 2: Look for deployTokenAndCreatePoolProxy method call
   const txs = Array.isArray(body.txs) ? body.txs : [];
+  console.log(`Checking ${txs.length} transactions`);
+  
   for (const tx of txs) {
+    console.log(`TX to: ${tx.to}, input prefix: ${tx.input ? tx.input.substring(0, 10) : 'N/A'}`);
+    
     if (tx.input && tx.input.startsWith(PBTC_DEPLOY_METHOD_ID)) {
+      console.log("✓ PBTC detected via method ID");
+      return true;
+    }
+    
+    // Check 3: Also check if transaction is TO the PBTC wallet
+    if (tx.to && tx.to.toLowerCase() === PBTC_WALLET && chainId === "8453") {
+      console.log("✓ PBTC detected via 'to' address");
       return true;
     }
   }
   
+  console.log("✗ PBTC not detected");
   return false;
 }
 
@@ -178,8 +198,7 @@ function detectLock(body) {
   const fromAddress = (body.txs?.[0]?.from || "").toLowerCase();
   const isPbtcInitiated = isPbtcTransaction(body, fromAddress, chainId);
 
-  console.log(`From address: ${fromAddress}`);
-  console.log(`PBTC initiated: ${isPbtcInitiated}`);
+  console.log(`PBTC initiated result: ${isPbtcInitiated}`);
 
   for (let i = 0; i < logs.length; i++) {
     const l = logs[i];
@@ -254,6 +273,7 @@ function detectLock(body) {
   let source;
   if (isPbtcInitiated) {
     source = "PBTC";
+    console.log("✓ Source set to PBTC");
   } else if (isTeamFinance) {
     source = isAdshareSource ? "Team Finance (via Adshare)" : "Team Finance";
   } else if (isGoPlus) {
@@ -268,7 +288,7 @@ function detectLock(body) {
   let type = "Unknown";
   if (isPbtcInitiated) {
     type = "V3 Token";
-    console.log(`DEBUG: PBTC detected, setting type to V3 Token. Current type: ${type}`);
+    console.log(`✓ Type set to V3 Token for PBTC`);
   } else if (isTeamFinance) {
     type = eventName === "Deposit" ? "V2 Token"
       : eventName === "DepositNFT" ? "V3 Token"
