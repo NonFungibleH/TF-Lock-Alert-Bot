@@ -1,0 +1,38 @@
+name: Enrich Token Prices
+
+on:
+  schedule:
+    # Run every 30 minutes
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Enrich token prices
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.ENRICHMENT_BEARER_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            https://tf-lock-alert-bot.vercel.app/api/dashboard/enrich-prices
+      
+      - name: Log completion
+        run: echo "Price enrichment completed at $(date)"
+
+  cleanup:
+    runs-on: ubuntu-latest
+    # Run cleanup once per day at midnight
+    if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Cleanup old data
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.ENRICHMENT_BEARER_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            https://tf-lock-alert-bot.vercel.app/api/dashboard/cleanup
+      
+      - name: Log completion
+        run: echo "Cleanup completed at $(date)"
