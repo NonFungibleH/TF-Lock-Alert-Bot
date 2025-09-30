@@ -9,7 +9,7 @@ const twitterClient = new TwitterApi({
 });
 const COMMUNITY_LINK = "https://t.co/iEAhyR2PgC";
 
-function ensureTwitterLimit(text, maxLength = 275) {
+function ensureTwitterLimit(text, includeCTA = false, maxLength = 275) {
   if (text.length <= maxLength) return text;
   let truncated = text.substring(0, maxLength);
   const lastBreak = Math.max(truncated.lastIndexOf('.'), truncated.lastIndexOf('!'), truncated.lastIndexOf('?'));
@@ -20,6 +20,9 @@ function ensureTwitterLimit(text, maxLength = 275) {
 }
 
 function getTweetPrompt(topic) {
+  const includeCTA = Math.random() < 0.4;
+  const selectedCTA = includeCTA ? PROFESSIONAL_CTAS[Math.floor(Math.random() * PROFESSIONAL_CTAS.length)] : '';
+  
   const TONE_TEMPLATE = `
   Write a single tweet under 240 characters.
   - Voice of @Hunt3r.exe, a sharp-eyed DeFi tracker sharing practical tips.
@@ -39,8 +42,7 @@ function getTweetPrompt(topic) {
     community_benefits: "Note a key perk of joining a DeFi community. e.g., Real-time scam alerts."
   };
   if (!TOPIC_GUIDANCE[topic]) throw new Error(`Topic '${topic}' not found`);
-  const includeCTA = Math.random() < 0.4;
-  const selectedCTA = includeCTA ? PROFESSIONAL_CTAS[Math.floor(Math.random() * PROFESSIONAL_CTAS.length)] : '';
+  
   let fullPrompt = `${TONE_TEMPLATE}\nTopic: ${topic}.\n${TOPIC_GUIDANCE[topic]}`;
   fullPrompt += includeCTA ? `\nInclude the CTA to drive to Telegram for more insights.` : `\nNo CTA – focus solely on delivering direct tips.`;
   return { prompt: fullPrompt, style: "plain", includeCTA };
@@ -90,7 +92,7 @@ module.exports = async (req, res) => {
       temperature: 0.7
     });
     let tweetText = completion.choices[0].message.content.trim().replace(/^["']|["']$/g, '').replace(/\n+/g, ' ').replace(/\s+/g, ' ');
-    tweetText = ensureTwitterLimit(tweetText, 275);
+    tweetText = ensureTwitterLimit(tweetText, includeCTA, 275);
     if (tweetText.length > 280) {
       return res.status(400).json({ error: "Tweet exceeds character limit" });
     }
