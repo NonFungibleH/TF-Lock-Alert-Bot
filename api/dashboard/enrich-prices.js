@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 const axios = require('axios');
+const { decodeTokenAddress, getTokenMetadata } = require('../../lib/token-decoder');
 
 // Price fetching for different chains
 async function getTokenPrice(tokenAddress, chainId) {
@@ -36,16 +37,9 @@ async function getTokenPrice(tokenAddress, chainId) {
   }
 }
 
-// Extract token address from transaction logs
-async function extractTokenAddress(txHash, chainId) {
-  // This would need to call an RPC or explorer API
-  // For now, return null - implement based on your needs
-  return null;
-}
-
 module.exports = async (req, res) => {
   try {
-    // Auth check - only allow calls with bearer token
+    // Auth check
     const authHeader = req.headers.authorization || req.headers.Authorization;
     const expectedAuth = "Bearer " + process.env.ENRICHMENT_BEARER_TOKEN;
     
@@ -58,12 +52,12 @@ module.exports = async (req, res) => {
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
     });
     
-    // Get locks from last 7 days that need enrichment
+    // Get locks from last 7 days
     const locksQuery = `
-      SELECT transaction_id, chain_id, token_address, lock_timestamp, created_at
+      SELECT transaction_id, chain_id, chain_name, platform, lock_type, 
+             token_address, token_symbol, lock_timestamp, created_at
       FROM lock_alerts
       WHERE created_at > EXTRACT(EPOCH FROM NOW() - INTERVAL '7 days')
-      AND token_address IS NOT NULL
       ORDER BY created_at DESC
       LIMIT 50;
     `;
@@ -72,55 +66,91 @@ module.exports = async (req, res) => {
     const locksResult = await client.query(locksQuery);
     
     let enriched = 0;
+    let decoded = 0;
     let errors = 0;
     
     for (const lock of locksResult.rows) {
       try {
-        // Get current price
-        const priceData = await getTokenPrice(lock.token_address, lock.chain_id);
+        let tokenAddress = lock.token_address;
+        let tokenSymbol = lock.token_symbol;
         
-        if (priceData) {
-          // Update lock with current price
-          await client.query(`
-            UPDATE lock_alerts
-            SET 
-              current_token_price = $1,
-              token_symbol = COALESCE(token_symbol, $2)
-            WHERE transaction_id = $3;
-          `, [priceData.price, priceData.symbol, lock.transaction_id]);
-          
-          // Calculate time since lock
-          const currentTime = Math.floor(Date.now() / 1000);
-          const timeSinceLock = Math.floor((currentTime - lock.lock_timestamp) / 60); // minutes
-          
-          // Store price history point
-          const priceChangePercent = lock.token_price_at_lock 
-            ? ((priceData.price - lock.token_price_at_lock) / lock.token_price_at_lock * 100)
-            : null;
-          
-          await client.query(`
-            INSERT INTO token_price_history 
-            (transaction_id, token_address, token_symbol, price, timestamp_recorded, time_since_lock_minutes, price_change_percent)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT DO NOTHING;
-          `, [
+        // STEP 1: Decode token address if missing
+        if (!tokenAddress) {
+          console.log(`Decoding token for ${lock.transaction_id}...`);
+          tokenAddress = await decodeTokenAddress(
             lock.transaction_id,
-            lock.token_address,
-            priceData.symbol,
-            priceData.price,
-            currentTime,
-            timeSinceLock,
-            priceChangePercent
-          ]);
+            lock.chain_id,
+            lock.platform,
+            lock.lock_type
+          );
           
-          enriched++;
+          if (tokenAddress) {
+            // Get token metadata (symbol, decimals)
+            const metadata = await getTokenMetadata(tokenAddress, lock.chain_id);
+            tokenSymbol = metadata?.symbol || 'UNKNOWN';
+            
+            // Update database with token info
+            await client.query(`
+              UPDATE lock_alerts
+              SET token_address = $1, token_symbol = $2
+              WHERE transaction_id = $3;
+            `, [tokenAddress, tokenSymbol, lock.transaction_id]);
+            
+            decoded++;
+            console.log(`Decoded: ${tokenSymbol} at ${tokenAddress}`);
+          } else {
+            console.log(`Could not decode token for ${lock.transaction_id}`);
+          }
         }
         
-        // Rate limiting
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // STEP 2: Fetch current price if we have token address
+        if (tokenAddress) {
+          const priceData = await getTokenPrice(tokenAddress, lock.chain_id);
+          
+          if (priceData) {
+            // Update lock with current price
+            await client.query(`
+              UPDATE lock_alerts
+              SET 
+                current_token_price = $1,
+                token_symbol = COALESCE(token_symbol, $2)
+              WHERE transaction_id = $3;
+            `, [priceData.price, priceData.symbol, lock.transaction_id]);
+            
+            // Calculate time since lock
+            const currentTime = Math.floor(Date.now() / 1000);
+            const timeSinceLock = Math.floor((currentTime - lock.lock_timestamp) / 60); // minutes
+            
+            // Store price history point
+            const priceChangePercent = lock.token_price_at_lock 
+              ? ((priceData.price - lock.token_price_at_lock) / lock.token_price_at_lock * 100)
+              : null;
+            
+            await client.query(`
+              INSERT INTO token_price_history 
+              (transaction_id, token_address, token_symbol, price, timestamp_recorded, time_since_lock_minutes, price_change_percent)
+              VALUES ($1, $2, $3, $4, $5, $6, $7)
+              ON CONFLICT DO NOTHING;
+            `, [
+              lock.transaction_id,
+              tokenAddress,
+              priceData.symbol,
+              priceData.price,
+              currentTime,
+              timeSinceLock,
+              priceChangePercent
+            ]);
+            
+            enriched++;
+            console.log(`Enriched: ${priceData.symbol} = $${priceData.price}`);
+          }
+        }
+        
+        // Rate limiting - be nice to APIs
+        await new Promise(resolve => setTimeout(resolve, 300));
         
       } catch (error) {
-        console.error(`Error enriching ${lock.transaction_id}:`, error.message);
+        console.error(`Error processing ${lock.transaction_id}:`, error.message);
         errors++;
       }
     }
@@ -130,6 +160,7 @@ module.exports = async (req, res) => {
     
     return res.status(200).json({
       status: 'completed',
+      decoded,
       enriched,
       errors,
       total: locksResult.rows.length,
