@@ -108,6 +108,11 @@
             box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
         }
 
+        .refresh-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .table-container {
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(10px);
@@ -173,6 +178,14 @@
             color: #495057;
         }
 
+        .price-change {
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .price-up { color: #10b981; }
+        .price-down { color: #ef4444; }
+
         .tx-link {
             color: #667eea;
             text-decoration: none;
@@ -235,7 +248,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔒 TF Lock Alerts Dashboard</h1>
+            <h1>TF Lock Alerts Dashboard</h1>
             <p>Real-time monitoring of token locks across multiple platforms and chains</p>
         </div>
 
@@ -259,7 +272,7 @@
         </div>
 
         <div class="controls">
-            <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Data</button>
+            <button class="refresh-btn" onclick="refreshData()">Refresh Data</button>
             <div style="margin-left: auto; color: #666; font-size: 0.9rem;">
                 Last updated: <span id="lastUpdated">-</span>
             </div>
@@ -267,7 +280,7 @@
 
         <div class="table-container">
             <div class="table-header">
-                📊 Recent Lock Events
+                Recent Lock Events
             </div>
             <div id="tableContent">
                 <div class="loading">Loading lock data...</div>
@@ -276,23 +289,16 @@
     </div>
 
     <script>
-        // Update this to match your Vercel deployment URL
-        const API_BASE = '/api/locks';
+        const API_BASE = '/api/dashboard/locks';
 
-        async function fetchLockData() {
+        async function fetchDashboardData() {
             const response = await fetch(API_BASE);
             if (!response.ok) throw new Error('Failed to fetch data');
             return await response.json();
         }
 
-        async function fetchStats() {
-            const response = await fetch(`${API_BASE}?action=stats`);
-            if (!response.ok) throw new Error('Failed to fetch stats');
-            return await response.json();
-        }
-
         function formatUSD(amount) {
-            if (!amount) return '$0';
+            if (!amount || amount === 0) return '$0';
             return new Intl.NumberFormat('en-US', {
                 style: 'currency',
                 currency: 'USD',
@@ -321,6 +327,21 @@
             return `${Math.floor(diff / 86400)}d ago`;
         }
 
+        function formatPriceChange(changes) {
+            if (!changes || Object.keys(changes).length === 0) return '';
+            
+            const periods = ['30min', '1h', '6h', '12h', '24h'];
+            const available = periods.find(p => changes[p] !== undefined);
+            
+            if (!available) return '';
+            
+            const change = changes[available];
+            const className = change >= 0 ? 'price-up' : 'price-down';
+            const symbol = change >= 0 ? '+' : '';
+            
+            return `<span class="price-change ${className}">${symbol}${change.toFixed(2)}% (${available})</span>`;
+        }
+
         function renderTable(locks) {
             if (!locks || locks.length === 0) {
                 return '<div class="no-data">No lock events found in the last 7 days</div>';
@@ -335,6 +356,7 @@
                             <th>Platform</th>
                             <th>Lock Type</th>
                             <th>Token</th>
+                            <th>Current Price</th>
                             <th>USD Value</th>
                             <th>Transaction</th>
                         </tr>
@@ -353,6 +375,10 @@
                                 <td>
                                     ${lock.token_symbol || 'Unknown'}
                                     ${lock.token_amount ? `<br><small>${parseFloat(lock.token_amount).toLocaleString()} tokens</small>` : ''}
+                                </td>
+                                <td>
+                                    ${lock.current_token_price ? `$${parseFloat(lock.current_token_price).toFixed(6)}` : '-'}
+                                    ${lock.priceChanges ? `<br>${formatPriceChange(lock.priceChanges)}` : ''}
                                 </td>
                                 <td>${formatUSD(lock.usd_value_at_lock)}</td>
                                 <td>
@@ -375,38 +401,36 @@
             
             try {
                 refreshBtn.disabled = true;
-                refreshBtn.textContent = '🔄 Loading...';
+                refreshBtn.textContent = 'Loading...';
                 
                 tableContent.innerHTML = '<div class="loading">Loading lock data...</div>';
                 
-                const [locks, stats] = await Promise.all([
-                    fetchLockData(),
-                    fetchStats()
-                ]);
+                const data = await fetchDashboardData();
                 
                 // Update stats
-                if (stats) {
-                    document.getElementById('totalLocks').textContent = stats.total_locks || 0;
-                    document.getElementById('totalUsdLocked').textContent = formatUSD(stats.total_usd_locked);
-                    document.getElementById('uniquePlatforms').textContent = stats.unique_platforms || 0;
-                    document.getElementById('uniqueChains').textContent = stats.unique_chains || 0;
+                if (data.stats) {
+                    document.getElementById('totalLocks').textContent = data.stats.total_locks || 0;
+                    document.getElementById('totalUsdLocked').textContent = formatUSD(data.stats.total_usd_locked);
+                    document.getElementById('uniquePlatforms').textContent = data.stats.unique_platforms || 0;
+                    document.getElementById('uniqueChains').textContent = data.stats.unique_chains || 0;
                 }
                 
                 // Update table
-                tableContent.innerHTML = renderTable(locks);
+                tableContent.innerHTML = renderTable(data.locks);
                 
                 // Update timestamp
                 document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString();
                 
             } catch (error) {
+                console.error('Dashboard error:', error);
                 tableContent.innerHTML = `
                     <div class="error">
-                        ❌ Error loading data: ${error.message}
+                        Error loading data: ${error.message}
                     </div>
                 `;
             } finally {
                 refreshBtn.disabled = false;
-                refreshBtn.textContent = '🔄 Refresh Data';
+                refreshBtn.textContent = 'Refresh Data';
             }
         }
 
