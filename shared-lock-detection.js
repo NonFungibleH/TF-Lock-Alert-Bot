@@ -1,4 +1,5 @@
 // Simplified detection for Team Finance and UNCX only (V2 + V3)
+const { keccak256 } = require("js-sha3");
 
 const CHAINS = {
   1: { name: "Ethereum", explorer: "https://etherscan.io/tx/" },
@@ -90,6 +91,18 @@ function detectLock(body) {
     return null;
   }
   
+  // Build ABI event map for additional event resolution
+  const eventMap = {};
+  if (Array.isArray(body.abi)) {
+    body.abi.forEach(ev => {
+      if (ev.type === "event") {
+        const sig = `${ev.name}(${ev.inputs.map(i => i.type).join(",")})`;
+        const hash = "0x" + keccak256(sig);
+        eventMap[hash] = { name: ev.name, signature: sig, inputs: ev.inputs };
+      }
+    });
+  }
+  
   let lockLog = null;
   
   for (let i = 0; i < logs.length; i++) {
@@ -97,8 +110,10 @@ function detectLock(body) {
     const addr = (l.address || "").toLowerCase();
     const topic0 = l.topic0;
     
-    // Try to resolve event name
-    let eventName = l.name || l.eventName || l.decoded?.name || EVENT_TOPICS[topic0];
+    // Try to resolve event name from multiple sources
+    let eventName = l.name || l.eventName || l.decoded?.name || 
+                   (eventMap[topic0] ? eventMap[topic0].name : null) ||
+                   EVENT_TOPICS[topic0];
     
     const isTeamFinance = TEAM_FINANCE_CONTRACTS.has(addr);
     const uncxVersion = UNCX_CONTRACTS[addr];
