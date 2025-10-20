@@ -103,12 +103,13 @@ async function enrichTokenData(tokenAddress, chainId) {
     const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
     const dexRes = await axios.get(dexUrl, { timeout: 5000 });
     
-    let price = null, liquidity = null, marketCap = null;
+    let price = null, liquidity = null, marketCap = null, pairCreatedAt = null;
     if (dexRes.data?.pairs?.length > 0) {
       const pair = dexRes.data.pairs[0];
       price = parseFloat(pair.priceUsd) || null;
       liquidity = parseFloat(pair.liquidity?.usd) || null;
       marketCap = parseFloat(pair.marketCap) || null;
+      pairCreatedAt = pair.pairCreatedAt || null; // Timestamp for contract age
     }
     
     // GoPlus for security
@@ -123,14 +124,19 @@ async function enrichTokenData(tokenAddress, chainId) {
         isOpenSource: secData.is_open_source === "1",
         holderCount: parseInt(secData.holder_count) || 0,
         ownerBalance: parseFloat(secData.owner_percent) || 0,
-        canTakeBackOwnership: secData.can_take_back_ownership === "1"
+        canTakeBackOwnership: secData.can_take_back_ownership === "1",
+        // New fields for top holders and LP lock
+        topHolderPercent: parseFloat(secData.holder_count_top10_percent) || 0,
+        lpHolderCount: parseInt(secData.lp_holder_count) || 0,
+        lpTotalSupply: parseFloat(secData.lp_total_supply) || 0,
+        isLpLocked: secData.is_true_token === "1" || secData.is_airdrop_scam === "0"
       };
     }
     
-    return { price, liquidity, marketCap, securityFlags };
+    return { price, liquidity, marketCap, pairCreatedAt, securityFlags };
   } catch (err) {
     console.error("Enrichment error:", err.message);
-    return { price: null, liquidity: null, marketCap: null, securityFlags: {} };
+    return { price: null, liquidity: null, marketCap: null, pairCreatedAt: null, securityFlags: {} };
   }
 }
 
