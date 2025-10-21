@@ -28,10 +28,16 @@ function extractTokenData(lockLog, eventName, source) {
     const topics = lockLog.topics || [];
     const data = lockLog.data || "0x";
     
+    console.log(`Extracting token - Event: ${eventName}, Source: ${source}`);
+    console.log(`Topics length: ${topics.length}, Data length: ${data.length}`);
+    console.log(`Topics:`, topics);
+    console.log(`Data:`, data);
+    
     // Team Finance V3 uses "Deposit" event (different from V2!)
     // V3 structure: topics[1] = token, topics[2] = withdrawer, data = id + amount + unlockTime
     if (source === "Team Finance" && eventName === "Deposit") {
       const tokenAddress = topics[1] ? `0x${topics[1].slice(26)}` : null;
+      console.log(`TF V3 Deposit - Extracted token: ${tokenAddress}`);
       
       if (data.length >= 194) {
         // Skip first 64 chars (id), then get amount and unlock
@@ -40,9 +46,11 @@ function extractTokenData(lockLog, eventName, source) {
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
         
+        console.log(`TF V3 Deposit - Amount: ${amount}, Unlock: ${unlockTime}`);
         return { tokenAddress, amount, unlockTime, version: "V3" };
       }
       
+      console.log(`TF V3 Deposit - Data too short: ${data.length}`);
       return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
     }
     
