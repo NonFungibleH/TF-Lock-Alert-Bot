@@ -46,20 +46,20 @@ function extractTokenData(lockLog, eventName, source) {
       return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
     }
     
-    // UNCX V2 onDeposit
+    // UNCX V2 onDeposit - NO indexed topics, all data in data field!
     if (eventName === "onDeposit") {
-      const tokenAddress = topics[1] ? `0x${topics[1].slice(26)}` : null;
-      
-      if (data.length >= 194) {
-        const amountHex = data.slice(2, 66);
-        const unlockHex = data.slice(130, 194);
+      // Data structure: lpToken (32 bytes) + user (32 bytes) + amount (32 bytes) + lockDate (32 bytes) + unlockDate (32 bytes)
+      if (data.length >= 322) { // 2 (0x) + 320 (5 * 64 hex chars)
+        const tokenAddress = `0x${data.slice(26, 66)}`; // First 32 bytes, skip leading zeros
+        const amountHex = data.slice(130, 194); // Third 32 bytes
+        const unlockHex = data.slice(258, 322); // Fifth 32 bytes
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
         
         return { tokenAddress, amount, unlockTime, version: "V2" };
       }
       
-      return { tokenAddress, amount: null, unlockTime: null, version: "V2" };
+      return { tokenAddress: null, amount: null, unlockTime: null, version: "V2" };
     }
     
     // Team Finance V3 DepositNFT/onLock
