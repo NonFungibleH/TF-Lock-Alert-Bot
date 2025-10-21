@@ -25,18 +25,28 @@ const ERC20_ABI = [
 // Extract token data from lock logs
 function extractTokenData(lockLog, eventName, source) {
   try {
+    // Moralis puts topics in separate fields, not an array
     const topics = lockLog.topics || [];
+    
+    // If topics array is empty, build it from topic0, topic1, topic2, topic3
+    const topicsArray = topics.length > 0 ? topics : [
+      lockLog.topic0,
+      lockLog.topic1, 
+      lockLog.topic2,
+      lockLog.topic3
+    ].filter(t => t !== null && t !== undefined);
+    
     const data = lockLog.data || "0x";
     
     console.log(`Extracting token - Event: ${eventName}, Source: ${source}`);
-    console.log(`Topics length: ${topics.length}, Data length: ${data.length}`);
-    console.log(`Topics:`, topics);
+    console.log(`Topics length: ${topicsArray.length}, Data length: ${data.length}`);
+    console.log(`Topics:`, topicsArray);
     console.log(`Data:`, data);
     
     // Team Finance V3 uses "Deposit" event (different from V2!)
     // V3 structure: topics[1] = token, topics[2] = withdrawer, data = id + amount + unlockTime
     if (source === "Team Finance" && eventName === "Deposit") {
-      const tokenAddress = topics[1] ? `0x${topics[1].slice(26)}` : null;
+      const tokenAddress = topicsArray[1] ? `0x${topicsArray[1].slice(26)}` : null;
       console.log(`TF V3 Deposit - Extracted token: ${tokenAddress}`);
       
       if (data.length >= 194) {
