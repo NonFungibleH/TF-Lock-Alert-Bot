@@ -28,13 +28,31 @@ function extractTokenData(lockLog, eventName, source) {
     const topics = lockLog.topics || [];
     const data = lockLog.data || "0x";
     
-    // V2 Locks (Team Finance Deposit, UNCX onDeposit)
-    if (eventName === "Deposit" || eventName === "onDeposit") {
+    // Team Finance V3 uses "Deposit" event (different from V2!)
+    // V3 structure: topics[1] = token, topics[2] = withdrawer, data = id + amount + unlockTime
+    if (source === "Team Finance" && eventName === "Deposit") {
       const tokenAddress = topics[1] ? `0x${topics[1].slice(26)}` : null;
       
-      if (data.length >= 130) {
+      if (data.length >= 194) {
+        // Skip first 64 chars (id), then get amount and unlock
+        const amountHex = data.slice(66, 130);
+        const unlockHex = data.slice(130, 194);
+        const amount = BigInt(`0x${amountHex}`);
+        const unlockTime = parseInt(unlockHex, 16);
+        
+        return { tokenAddress, amount, unlockTime, version: "V3" };
+      }
+      
+      return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
+    }
+    
+    // UNCX V2 onDeposit
+    if (eventName === "onDeposit") {
+      const tokenAddress = topics[1] ? `0x${topics[1].slice(26)}` : null;
+      
+      if (data.length >= 194) {
         const amountHex = data.slice(2, 66);
-        const unlockHex = source === "Team Finance" ? data.slice(66, 130) : data.slice(130, 194);
+        const unlockHex = data.slice(130, 194);
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
         
@@ -44,7 +62,7 @@ function extractTokenData(lockLog, eventName, source) {
       return { tokenAddress, amount: null, unlockTime: null, version: "V2" };
     }
     
-    // V3 Locks (Team Finance DepositNFT/onLock)
+    // Team Finance V3 DepositNFT/onLock
     if (eventName === "DepositNFT" || eventName === "onLock") {
       const tokenAddress = topics[2] ? `0x${topics[2].slice(26)}` : null;
       
@@ -160,6 +178,34 @@ function formatUnlockDate(unlockTime) {
   if (!unlockTime) return "Unknown";
   const date = new Date(unlockTime * 1000);
   return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
+// Calculate contract age from pair creation
+function formatContractAge(pairCreatedAt) {
+  if (!pairCreatedAt) return null;
+  
+  const created = new Date(pairCreatedAt).getTime();
+  const now = Date.now();
+  const diffMs = now - created;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  
+  if (diffDays < 1) return "< 1 day old";
+  if (diffDays === 1) return "1 day old";
+  if (diffDays < 7) return `${diffDays} days old`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks old`;
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)} months old`;
+  return `${Math.floor(diffDays / 365)} years old`;
+}
+
+// Generate DEX buy link based on chain
+function getBuyLink(tokenAddress, chainId) {
+  const links = {
+    1: `https://app.uniswap.org/#/swap?outputCurrency=${tokenAddress}`, // Ethereum
+    56: `https://pancakeswap.finance/swap?outputCurrency=${tokenAddress}`, // BSC
+    137: `https://quickswap.exchange/#/swap?outputCurrency=${tokenAddress}`, // Polygon
+    8453: `https://app.uniswap.org/#/swap?outputCurrency=${tokenAddress}&chain=base` // Base
+  };
+  return links[chainId] || null;
 }
 
 // Send initial Telegram message
@@ -364,6 +410,12 @@ module.exports = async (req, res) => {
           parts.push(`Holders: ${enriched.securityFlags.holderCount.toLocaleString()}`);
         }
         
+        // Contract age
+        const contractAge = formatContractAge(enriched.pairCreatedAt);
+        if (contractAge) {
+          parts.push(`Age: ${contractAge}`);
+        }
+        
         parts.push("");
         
         // LOCK DETAILS section
@@ -400,6 +452,12 @@ module.exports = async (req, res) => {
         
         parts.push(`[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress}) | [DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress}) | [TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
         
+        // Buy link
+        const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
+        if (buyLink) {
+          parts.push(`[🛒 Buy Now](${buyLink})`);
+        }
+        
         parts.push("");
         
         // QUICK CHECK section (security flags)
@@ -428,6 +486,20 @@ module.exports = async (req, res) => {
             parts.push(`🔴 Owner holds ${enriched.securityFlags.ownerBalance.toFixed(1)}%`);
           } else if (enriched.securityFlags.ownerBalance > 20) {
             parts.push(`⚠️ Owner holds ${enriched.securityFlags.ownerBalance.toFixed(1)}%`);
+          }
+          
+          // Top holder concentration
+          if (enriched.securityFlags.topHolderPercent > 0) {
+            if (enriched.securityFlags.topHolderPercent > 70) {
+              parts.push(`🔴 Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
+            } else if (enriched.securityFlags.topHolderPercent > 50) {
+              parts.push(`⚠️ Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
+            }
+          }
+          
+          // LP lock status
+          if (enriched.securityFlags.lpHolderCount > 0) {
+            parts.push(`💧 LP: ${enriched.securityFlags.lpHolderCount} holders`);
           }
           
           parts.push("");
