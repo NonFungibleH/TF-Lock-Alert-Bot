@@ -391,7 +391,10 @@ module.exports = async (req, res) => {
         // Extract token data from logs
         const tokenData = extractTokenData(lockLog, eventName, source);
         
-        console.log("Token extraction result:", JSON.stringify(tokenData, null, 2));
+        // Convert BigInt to string for logging
+        console.log("Token extraction result:", JSON.stringify(tokenData, (key, value) =>
+          typeof value === 'bigint' ? value.toString() : value
+        , 2));
         
         if (!tokenData.tokenAddress) {
           console.log("⚠️ Could not extract token address");
@@ -406,7 +409,11 @@ module.exports = async (req, res) => {
         
         if (!tokenInfo) {
           console.log("⚠️ Could not fetch token info");
-          await editTelegramMessage(messageId, basicMessage.replace("⏳ _Fetching token details..._", "⚠️ Could not fetch token info"));
+          const failMessage = basicMessage.replace(
+            "⏳ _Fetching token details..._", 
+            `⚠️ Could not fetch token info\n\nToken: \`${tokenData.tokenAddress}\``
+          );
+          await editTelegramMessage(messageId, failMessage);
           return;
         }
         
@@ -488,7 +495,7 @@ module.exports = async (req, res) => {
         }
         
         if (usdValue) {
-          parts.push(`Value: $${Number(usdValue).toLocaleString()}`);
+          parts.push(`Value: ${Number(usdValue).toLocaleString()}`);
         }
         
         if (lockedPercent) {
@@ -572,6 +579,26 @@ module.exports = async (req, res) => {
         
       } catch (enrichError) {
         console.error("❌ Enrichment failed:", enrichError.message, enrichError.stack);
+        
+        // Try to at least show the token address if we have it
+        try {
+          const tokenData = extractTokenData(lockLog, eventName, source);
+          if (tokenData.tokenAddress) {
+            const errorMessage = basicMessage.replace(
+              "⏳ _Fetching token details..._",
+              `⚠️ Enrichment failed\n\nToken: \`${tokenData.tokenAddress}\`\n\nError: ${enrichError.message}`
+            );
+            await editTelegramMessage(messageId, errorMessage);
+          } else {
+            const errorMessage = basicMessage.replace(
+              "⏳ _Fetching token details..._",
+              `⚠️ Enrichment failed: ${enrichError.message}`
+            );
+            await editTelegramMessage(messageId, errorMessage);
+          }
+        } catch (fallbackError) {
+          console.error("❌ Even fallback message failed:", fallbackError.message);
+        }
       }
     })();
     
