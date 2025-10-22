@@ -68,15 +68,18 @@ function extractTokenData(lockLog, eventName, source) {
     if (eventName === "onDeposit") {
       // Data structure: lpToken (32 bytes) + user (32 bytes) + amount (32 bytes) + lockDate (32 bytes) + unlockDate (32 bytes)
       if (data.length >= 322) { // 2 (0x) + 320 (5 * 64 hex chars)
-        const tokenAddress = `0x${data.slice(26, 66)}`; // First 32 bytes, skip leading zeros
-        const amountHex = data.slice(130, 194); // Third 32 bytes
-        const unlockHex = data.slice(258, 322); // Fifth 32 bytes
+        // Each field is 64 hex chars (32 bytes). Addresses are right-padded with zeros
+        const tokenAddress = `0x${data.slice(26, 66)}`; // First 32 bytes, last 20 bytes = address
+        const amountHex = data.slice(130, 194); // Third 32 bytes (skip 2 + 64 + 64)
+        const unlockHex = data.slice(258, 322); // Fifth 32 bytes (skip 2 + 64*4)
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
         
+        console.log(`UNCX V2 onDeposit - Token: ${tokenAddress}, Amount: ${amount}, Unlock: ${unlockTime}`);
         return { tokenAddress, amount, unlockTime, version: "V2" };
       }
       
+      console.log(`UNCX V2 onDeposit - Data too short: ${data.length}`);
       return { tokenAddress: null, amount: null, unlockTime: null, version: "V2" };
     }
     
@@ -96,6 +99,24 @@ function extractTokenData(lockLog, eventName, source) {
       return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
     }
     
+    // UNCX V3 onLock - NO indexed topics, complex data structure
+    // The 10th parameter (index 9) is poolAddress (at byte 640)
+    // Data fields: lock_id, nftPositionManager, nft_id, owner, additionalCollector, collectAddress, unlockDate, countryCode, collectFee, poolAddress, position(tuple)
+    if ((source === "UNCX" && eventName === "onLock") || eventName === "DepositNFT") {
+      // For UNCX V3 onLock, poolAddress is at position 9 (10th field) = offset 640 (9 * 64 + 2 + 64)
+      if (data.length >= 706) { // Need at least 10 fields
+        const poolAddress = `0x${data.slice(642, 706).slice(-40)}`; // Get last 40 hex chars (20 bytes)
+        const unlockHex = data.slice(386, 450); // 7th field (unlockDate)
+        const unlockTime = parseInt(unlockHex, 16);
+        
+        console.log(`UNCX/TF V3 onLock - Pool/Token: ${poolAddress}, Unlock: ${unlockTime}`);
+        return { tokenAddress: poolAddress, amount: null, unlockTime, version: "V3" };
+      }
+      
+      console.log(`UNCX/TF V3 onLock - Data too short: ${data.length}`);
+      return { tokenAddress: null, amount: null, unlockTime: null, version: "V3" };
+    }
+    
     return { tokenAddress: null, amount: null, unlockTime: null, version: "Unknown" };
   } catch (err) {
     console.error("Token extraction error:", err.message);
@@ -106,17 +127,33 @@ function extractTokenData(lockLog, eventName, source) {
 // Fetch token metadata from blockchain
 async function getTokenInfo(tokenAddress, chainId) {
   try {
-    const rpcUrl = RPC_URLS[chainId];
-    if (!rpcUrl) return null;
+    console.log(`Fetching token info for ${tokenAddress} on chain ${chainId}`);
     
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const rpcUrl = RPC_URLS[chainId];
+    if (!rpcUrl) {
+      console.error(`No RPC URL for chain ${chainId}`);
+      return null;
+    }
+    
+    console.log(`Using RPC: ${rpcUrl}`);
+    
+    // Validate address format - use utils for v5 compatibility
+    if (!tokenAddress || !ethers.utils.isAddress(tokenAddress)) {
+      console.error(`Invalid token address: ${tokenAddress}`);
+      return null;
+    }
+    
+    // ethers v5 syntax (which is what you have based on the require statement)
+    const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
     
     const [symbol, decimals, totalSupply] = await Promise.all([
-      contract.symbol(),
-      contract.decimals(),
-      contract.totalSupply()
+      contract.symbol().catch(e => { console.error("Symbol fetch error:", e.message); throw e; }),
+      contract.decimals().catch(e => { console.error("Decimals fetch error:", e.message); throw e; }),
+      contract.totalSupply().catch(e => { console.error("TotalSupply fetch error:", e.message); throw e; })
     ]);
+    
+    console.log(`✅ Token info: ${symbol}, decimals: ${decimals}`);
     
     return { 
       symbol, 
@@ -124,7 +161,7 @@ async function getTokenInfo(tokenAddress, chainId) {
       totalSupply: totalSupply.toString() 
     };
   } catch (err) {
-    console.error("Token info fetch error:", err.message);
+    console.error("Token info fetch error:", err.message, err.stack);
     return null;
   }
 }
@@ -353,6 +390,8 @@ module.exports = async (req, res) => {
         
         // Extract token data from logs
         const tokenData = extractTokenData(lockLog, eventName, source);
+        
+        console.log("Token extraction result:", JSON.stringify(tokenData, null, 2));
         
         if (!tokenData.tokenAddress) {
           console.log("⚠️ Could not extract token address");
