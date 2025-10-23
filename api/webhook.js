@@ -468,10 +468,16 @@ module.exports = async (req, res) => {
     });
     
     // PART 3: Trigger enrichment via separate endpoint (won't be killed)
-    const enrichmentUrl = `${process.env.VERCEL_URL || 'https://your-domain.vercel.app'}/api/enrich-lock`;
+    // Build the enrichment URL - use VERCEL_URL if available, otherwise needs manual config
+    const baseUrl = process.env.VERCEL_URL 
+      ? `https://${process.env.VERCEL_URL}` 
+      : process.env.BASE_URL || 'http://localhost:3000';
+    const enrichmentUrl = `${baseUrl}/api/enrich-lock`;
     
     try {
-      // Fire and forget - don't await
+      console.log(`Triggering enrichment at: ${enrichmentUrl}`);
+      
+      // Fire and forget - don't await, just trigger it
       axios.post(enrichmentUrl, {
         messageId,
         txHash,
@@ -482,9 +488,9 @@ module.exports = async (req, res) => {
         explorerLink,
         chain: chain.name
       }, {
-        timeout: 2000 // Just ensure it starts, don't wait for response
+        timeout: 2000
       }).catch(err => {
-        console.log("Enrichment trigger sent (response not awaited)");
+        console.log("Enrichment trigger error (non-blocking):", err.message);
       });
       
       console.log("✅ Enrichment triggered in separate function");
