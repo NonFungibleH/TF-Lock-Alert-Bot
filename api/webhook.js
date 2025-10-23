@@ -7,27 +7,39 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
 
-// RPC endpoints for blockchain calls - prioritize fastest
+// RPC endpoints - Use env vars first, then fallback to premium public RPCs
 const RPC_URLS = {
   1: [
-    "https://rpc.ankr.com/eth",
-    process.env.ETHEREUM_RPC || "https://eth.llamarpc.com",
-    "https://ethereum.publicnode.com"
-  ],
+    process.env.ETHEREUM_RPC, // Your paid RPC (Alchemy/Infura/QuickNode)
+    "https://eth.llamarpc.com",
+    "https://ethereum-rpc.publicnode.com",
+    "https://eth.meowrpc.com",
+    "https://eth.drpc.org"
+  ].filter(Boolean), // Remove undefined env vars
+  
   56: [
-    "https://rpc.ankr.com/bsc", // Ankr is usually fastest
-    "https://bsc-dataseed1.ninicoin.io",
-    process.env.BSC_RPC || "https://bsc-dataseed.binance.org",
-    "https://bsc-dataseed1.defibit.io"
-  ],
+    process.env.BSC_RPC, // Your paid RPC
+    "https://bsc.drpc.org",
+    "https://bsc-rpc.publicnode.com",
+    "https://bsc.meowrpc.com",
+    "https://bsc-dataseed.bnbchain.org"
+  ].filter(Boolean),
+  
   137: [
-    "https://rpc.ankr.com/polygon",
-    process.env.POLYGON_RPC || "https://polygon-rpc.com"
-  ],
+    process.env.POLYGON_RPC, // Your paid RPC
+    "https://polygon.drpc.org",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://1rpc.io/matic",
+    "https://endpoints.omniatech.io/v1/matic/mainnet/public"
+  ].filter(Boolean),
+  
   8453: [
+    process.env.BASE_RPC, // Your paid RPC
     "https://base.llamarpc.com",
-    process.env.BASE_RPC || "https://mainnet.base.org"
-  ]
+    "https://base-rpc.publicnode.com",
+    "https://base.meowrpc.com",
+    "https://endpoints.omniatech.io/v1/base/mainnet/public"
+  ].filter(Boolean)
 };
 
 // ERC20 ABI for token info
