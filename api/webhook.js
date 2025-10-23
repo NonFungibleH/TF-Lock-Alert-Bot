@@ -7,26 +7,26 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
 
-// RPC endpoints for blockchain calls - with fallbacks
+// RPC endpoints for blockchain calls - prioritize fastest
 const RPC_URLS = {
   1: [
-    process.env.ETHEREUM_RPC || "https://eth.llamarpc.com",
     "https://rpc.ankr.com/eth",
+    process.env.ETHEREUM_RPC || "https://eth.llamarpc.com",
     "https://ethereum.publicnode.com"
   ],
   56: [
-    process.env.BSC_RPC || "https://bsc-dataseed.binance.org",
-    "https://bsc-dataseed1.defibit.io",
+    "https://rpc.ankr.com/bsc", // Ankr is usually fastest
     "https://bsc-dataseed1.ninicoin.io",
-    "https://rpc.ankr.com/bsc"
+    process.env.BSC_RPC || "https://bsc-dataseed.binance.org",
+    "https://bsc-dataseed1.defibit.io"
   ],
   137: [
-    process.env.POLYGON_RPC || "https://polygon-rpc.com",
-    "https://rpc.ankr.com/polygon"
+    "https://rpc.ankr.com/polygon",
+    process.env.POLYGON_RPC || "https://polygon-rpc.com"
   ],
   8453: [
-    process.env.BASE_RPC || "https://mainnet.base.org",
-    "https://base.llamarpc.com"
+    "https://base.llamarpc.com",
+    process.env.BASE_RPC || "https://mainnet.base.org"
   ]
 };
 
@@ -98,9 +98,30 @@ function extractTokenData(lockLog, eventName, source) {
       return { tokenAddress: null, amount: null, unlockTime: null, version: "V2" };
     }
     
-    // Team Finance V3 DepositNFT/onLock
+    // Team Finance V3 DepositNFT - token is indexed in topics[1]
+    if (source === "Team Finance" && eventName === "DepositNFT") {
+      const tokenAddress = topicsArray[1] ? `0x${topicsArray[1].slice(26)}` : null;
+      console.log(`TF V3 DepositNFT - Extracted token: ${tokenAddress}`);
+      
+      if (data.length >= 258) { // id (64) + tokenId (64) + amount (64) + unlockTime (64) = 256 + 2
+        const tokenIdHex = data.slice(66, 130); // Second 32 bytes
+        const amountHex = data.slice(130, 194); // Third 32 bytes  
+        const unlockHex = data.slice(194, 258); // Fourth 32 bytes
+        const tokenId = parseInt(tokenIdHex, 16);
+        const amount = BigInt(`0x${amountHex}`);
+        const unlockTime = parseInt(unlockHex, 16);
+        
+        console.log(`TF V3 DepositNFT - TokenId: ${tokenId}, Amount: ${amount}, Unlock: ${unlockTime}`);
+        return { tokenAddress, amount, unlockTime, version: "V3", tokenId };
+      }
+      
+      console.log(`TF V3 DepositNFT - Data too short: ${data.length}`);
+      return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
+    }
+    
+    // Generic DepositNFT/onLock fallback (for other sources)
     if (eventName === "DepositNFT" || eventName === "onLock") {
-      const tokenAddress = topics[2] ? `0x${topics[2].slice(26)}` : null;
+      const tokenAddress = topicsArray[2] ? `0x${topicsArray[2].slice(26)}` : null;
       
       if (data.length >= 130) {
         const amountHex = data.slice(2, 66);
@@ -171,9 +192,9 @@ async function getTokenInfo(tokenAddress, chainId) {
       );
       
       const [symbol, decimals, totalSupply] = await Promise.all([
-        Promise.race([contract.symbol(), timeout(5000)]),
-        Promise.race([contract.decimals(), timeout(5000)]),
-        Promise.race([contract.totalSupply(), timeout(5000)])
+        Promise.race([contract.symbol(), timeout(3000)]),
+        Promise.race([contract.decimals(), timeout(3000)]),
+        Promise.race([contract.totalSupply(), timeout(3000)])
       ]);
       
       console.log(`✅ Token info: ${symbol}, decimals: ${decimals}`);
