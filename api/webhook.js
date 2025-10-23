@@ -467,15 +467,30 @@ module.exports = async (req, res) => {
       messageId
     });
     
-    // PART 3: Continue enrichment in background (best effort)
-    (async () => {
-      // Set a maximum execution time for the entire enrichment
-      const enrichmentTimeout = setTimeout(() => {
-        console.error("⚠️ Enrichment timeout - updating message with partial data");
-      }, 25000); // 25 seconds max
+    // PART 3: Trigger enrichment via separate endpoint (won't be killed)
+    const enrichmentUrl = `${process.env.VERCEL_URL || 'https://your-domain.vercel.app'}/api/enrich-lock`;
+    
+    try {
+      // Fire and forget - don't await
+      axios.post(enrichmentUrl, {
+        messageId,
+        txHash,
+        chainId,
+        lockLog,
+        eventName,
+        source,
+        explorerLink,
+        chain: chain.name
+      }, {
+        timeout: 2000 // Just ensure it starts, don't wait for response
+      }).catch(err => {
+        console.log("Enrichment trigger sent (response not awaited)");
+      });
       
-      try {
-        console.log("Starting background enrichment...");
+      console.log("✅ Enrichment triggered in separate function");
+    } catch (err) {
+      console.error("Failed to trigger enrichment:", err.message);
+    }
         
         // Extract token data from logs
         const tokenData = extractTokenData(lockLog, eventName, source);
