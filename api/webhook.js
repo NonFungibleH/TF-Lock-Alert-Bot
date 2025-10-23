@@ -475,12 +475,12 @@ module.exports = async (req, res) => {
     const enrichmentUrl = `${baseUrl}/api/enrich-lock`;
     
     try {
-      console.log(`Triggering enrichment at: ${enrichmentUrl}`);
+      console.log(`Triggering enrichment at: ${enrichmentUrl} for txHash: ${txHash}`);
       
       // Fire and forget - don't await, just trigger it
       axios.post(enrichmentUrl, {
         messageId,
-        txHash,
+        txHash,  // Important: pass txHash for duplicate detection
         chainId,
         lockLog,
         eventName,
