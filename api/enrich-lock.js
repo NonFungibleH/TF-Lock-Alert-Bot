@@ -273,14 +273,44 @@ async function editTelegramMessage(messageId, text) {
   );
 }
 
+// In-memory cache to prevent duplicate enrichments
+const enrichmentCache = new Map();
+const CACHE_TTL = 600000; // 10 minutes
+
 module.exports = async (req, res) => {
   try {
     console.log("🔄 Starting enrichment process...");
     
-    const { messageId, chainId, lockLog, eventName, source, explorerLink, chain } = req.body;
+    const { messageId, txHash, chainId, lockLog, eventName, source, explorerLink, chain } = req.body;
     
     if (!messageId || !chainId || !lockLog) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // Check for duplicate enrichment request
+    if (txHash && enrichmentCache.has(txHash)) {
+      const cachedTime = enrichmentCache.get(txHash);
+      const timeSince = Date.now() - cachedTime;
+      
+      if (timeSince < CACHE_TTL) {
+        console.log(`⚠️ Duplicate enrichment request for ${txHash} (${Math.floor(timeSince / 1000)}s ago)`);
+        return res.status(200).json({ status: "skipped", reason: "duplicate" });
+      }
+    }
+    
+    // Mark this txHash as being processed
+    if (txHash) {
+      enrichmentCache.set(txHash, Date.now());
+      
+      // Clean up old entries periodically
+      if (enrichmentCache.size > 100) {
+        const now = Date.now();
+        for (const [key, timestamp] of enrichmentCache.entries()) {
+          if (now - timestamp > CACHE_TTL) {
+            enrichmentCache.delete(key);
+          }
+        }
+      }
     }
     
     // Extract token data
