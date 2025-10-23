@@ -366,4 +366,94 @@ module.exports = async (req, res) => {
     parts.push("🔐 **LOCK DETAILS**");
     
     if (amount) {
-      const amountStr = amount >= 1000000
+      const amountStr = amount >= 1000000 
+        ? `${(amount / 1000000).toFixed(2)}M`
+        : amount >= 1000
+        ? `${(amount / 1000).toFixed(1)}K`
+        : amount.toFixed(2);
+      parts.push(`Amount: ${amountStr} tokens`);
+    }
+    
+    if (usdValue) {
+      parts.push(`Value: ${Number(usdValue).toLocaleString()}`);
+    }
+    
+    if (lockedPercent) {
+      parts.push(`Locked: ${lockedPercent}% of supply`);
+    }
+    
+    parts.push(`Duration: ${duration} (until ${unlockDate})`);
+    parts.push(`Source: ${source}`);
+    parts.push(`Chain: ${chain}`);
+    
+    parts.push("");
+    parts.push("🔗 **LINKS**");
+    
+    const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
+    const chainName = chainMap[chainId] || "ethereum";
+    
+    parts.push(`[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress}) | [DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress}) | [TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
+    
+    const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
+    if (buyLink) {
+      parts.push(`[🛒 Buy Now](${buyLink})`);
+    }
+    
+    parts.push("");
+    
+    // Security section
+    const hasSecurityInfo = enriched.securityFlags && Object.keys(enriched.securityFlags).length > 0;
+    
+    if (hasSecurityInfo) {
+      parts.push("⚡ **QUICK CHECK**");
+      
+      if (enriched.securityFlags.isOpenSource === true) {
+        parts.push("✅ Verified contract");
+      } else if (enriched.securityFlags.isOpenSource === false) {
+        parts.push("⚠️ Not verified");
+      }
+      
+      if (enriched.securityFlags.isHoneypot === false) {
+        parts.push("✅ Not honeypot");
+      } else if (enriched.securityFlags.isHoneypot === true) {
+        parts.push("🔴 Honeypot detected!");
+      }
+      
+      if (enriched.securityFlags.canTakeBackOwnership === true) {
+        parts.push("⚠️ Can take back ownership");
+      }
+      
+      if (enriched.securityFlags.ownerBalance > 50) {
+        parts.push(`🔴 Owner holds ${enriched.securityFlags.ownerBalance.toFixed(1)}%`);
+      } else if (enriched.securityFlags.ownerBalance > 20) {
+        parts.push(`⚠️ Owner holds ${enriched.securityFlags.ownerBalance.toFixed(1)}%`);
+      }
+      
+      if (enriched.securityFlags.topHolderPercent > 70) {
+        parts.push(`🔴 Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
+      } else if (enriched.securityFlags.topHolderPercent > 50) {
+        parts.push(`⚠️ Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
+      }
+      
+      if (enriched.securityFlags.lpHolderCount > 0) {
+        parts.push(`💧 LP: ${enriched.securityFlags.lpHolderCount} holders`);
+      }
+      
+      parts.push("");
+    }
+    
+    parts.push(`[View Transaction](${explorerLink})`);
+    
+    const enrichedMessage = parts.join("\n");
+    
+    await editTelegramMessage(messageId, enrichedMessage);
+    
+    console.log("✅ Enrichment complete and message updated");
+    
+    return res.status(200).json({ status: "success" });
+    
+  } catch (err) {
+    console.error("❌ Enrichment error:", err.message, err.stack);
+    return res.status(500).json({ error: err.message });
+  }
+};
