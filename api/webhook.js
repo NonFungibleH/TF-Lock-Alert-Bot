@@ -172,38 +172,57 @@ async function enrichTokenData(tokenAddress, chainId) {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId];
     
-    // DexScreener for price/liquidity
-    const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
-    const dexRes = await axios.get(dexUrl, { timeout: 5000 });
+    console.log(`Starting enrichment for ${tokenAddress} on ${chainName}`);
     
+    // DexScreener for price/liquidity
     let price = null, liquidity = null, marketCap = null, pairCreatedAt = null;
-    if (dexRes.data?.pairs?.length > 0) {
-      const pair = dexRes.data.pairs[0];
-      price = parseFloat(pair.priceUsd) || null;
-      liquidity = parseFloat(pair.liquidity?.usd) || null;
-      marketCap = parseFloat(pair.marketCap) || null;
-      pairCreatedAt = pair.pairCreatedAt || null; // Timestamp for contract age
+    try {
+      const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
+      console.log(`Fetching DexScreener: ${dexUrl}`);
+      const dexRes = await axios.get(dexUrl, { timeout: 5000 });
+      
+      if (dexRes.data?.pairs?.length > 0) {
+        const pair = dexRes.data.pairs[0];
+        price = parseFloat(pair.priceUsd) || null;
+        liquidity = parseFloat(pair.liquidity?.usd) || null;
+        marketCap = parseFloat(pair.marketCap) || null;
+        pairCreatedAt = pair.pairCreatedAt || null;
+        console.log(`✅ DexScreener: price=${price}, liq=${liquidity}, mc=${marketCap}`);
+      } else {
+        console.log(`⚠️ DexScreener: No pairs found`);
+      }
+    } catch (dexError) {
+      console.error(`❌ DexScreener error:`, dexError.message);
     }
     
     // GoPlus for security
-    const goplusUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainName}?contract_addresses=${tokenAddress}`;
-    const goplusRes = await axios.get(goplusUrl, { timeout: 5000 });
-    
     let securityFlags = {};
-    const secData = goplusRes.data?.result?.[tokenAddress.toLowerCase()];
-    if (secData) {
-      securityFlags = {
-        isHoneypot: secData.is_honeypot === "1",
-        isOpenSource: secData.is_open_source === "1",
-        holderCount: parseInt(secData.holder_count) || 0,
-        ownerBalance: parseFloat(secData.owner_percent) || 0,
-        canTakeBackOwnership: secData.can_take_back_ownership === "1",
-        // New fields for top holders and LP lock
-        topHolderPercent: parseFloat(secData.holder_count_top10_percent) || 0,
-        lpHolderCount: parseInt(secData.lp_holder_count) || 0,
-        lpTotalSupply: parseFloat(secData.lp_total_supply) || 0,
-        isLpLocked: secData.is_true_token === "1" || secData.is_airdrop_scam === "0"
-      };
+    try {
+      const goplusUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainName}?contract_addresses=${tokenAddress}`;
+      console.log(`Fetching GoPlus: ${goplusUrl}`);
+      const goplusRes = await axios.get(goplusUrl, { timeout: 5000 });
+      
+      const secData = goplusRes.data?.result?.[tokenAddress.toLowerCase()];
+      console.log(`GoPlus raw response:`, JSON.stringify(goplusRes.data?.result, null, 2));
+      
+      if (secData) {
+        securityFlags = {
+          isHoneypot: secData.is_honeypot === "1",
+          isOpenSource: secData.is_open_source === "1",
+          holderCount: parseInt(secData.holder_count) || 0,
+          ownerBalance: parseFloat(secData.owner_percent) || 0,
+          canTakeBackOwnership: secData.can_take_back_ownership === "1",
+          topHolderPercent: parseFloat(secData.holder_count_top10_percent) || 0,
+          lpHolderCount: parseInt(secData.lp_holder_count) || 0,
+          lpTotalSupply: parseFloat(secData.lp_total_supply) || 0,
+          isLpLocked: secData.is_true_token === "1" || secData.is_airdrop_scam === "0"
+        };
+        console.log(`✅ GoPlus: ${Object.keys(securityFlags).length} flags parsed`);
+      } else {
+        console.log(`⚠️ GoPlus: No security data found for ${tokenAddress.toLowerCase()}`);
+      }
+    } catch (goplusError) {
+      console.error(`❌ GoPlus error:`, goplusError.message);
     }
     
     return { price, liquidity, marketCap, pairCreatedAt, securityFlags };
@@ -427,7 +446,8 @@ module.exports = async (req, res) => {
         // Enrich with price/security
         const enriched = await enrichTokenData(tokenData.tokenAddress, chainId);
         
-        console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}`);
+        console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}, marketCap=${enriched.marketCap}`);
+        console.log(`Security flags:`, JSON.stringify(enriched.securityFlags, null, 2));
         
         // Calculate percentages
         const lockedPercent = amount && tokenInfo.totalSupply 
@@ -525,14 +545,14 @@ module.exports = async (req, res) => {
         parts.push("");
         
         // QUICK CHECK section (security flags)
-        const hasSecurityInfo = enriched.securityFlags.isHoneypot !== undefined;
+        const hasSecurityInfo = enriched.securityFlags && Object.keys(enriched.securityFlags).length > 0;
         
         if (hasSecurityInfo) {
           parts.push("⚡ **QUICK CHECK**");
           
-          if (enriched.securityFlags.isOpenSource) {
+          if (enriched.securityFlags.isOpenSource === true) {
             parts.push("✅ Verified contract");
-          } else {
+          } else if (enriched.securityFlags.isOpenSource === false) {
             parts.push("⚠️ Not verified");
           }
           
@@ -542,7 +562,7 @@ module.exports = async (req, res) => {
             parts.push("🔴 Honeypot detected!");
           }
           
-          if (enriched.securityFlags.canTakeBackOwnership) {
+          if (enriched.securityFlags.canTakeBackOwnership === true) {
             parts.push("⚠️ Can take back ownership");
           }
           
@@ -553,12 +573,10 @@ module.exports = async (req, res) => {
           }
           
           // Top holder concentration
-          if (enriched.securityFlags.topHolderPercent > 0) {
-            if (enriched.securityFlags.topHolderPercent > 70) {
-              parts.push(`🔴 Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
-            } else if (enriched.securityFlags.topHolderPercent > 50) {
-              parts.push(`⚠️ Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
-            }
+          if (enriched.securityFlags.topHolderPercent > 70) {
+            parts.push(`🔴 Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
+          } else if (enriched.securityFlags.topHolderPercent > 50) {
+            parts.push(`⚠️ Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
           }
           
           // LP lock status
