@@ -7,12 +7,27 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
 
-// RPC endpoints for blockchain calls
+// RPC endpoints for blockchain calls - with fallbacks
 const RPC_URLS = {
-  1: process.env.ETHEREUM_RPC || "https://eth.llamarpc.com",
-  56: process.env.BSC_RPC || "https://bsc-dataseed.binance.org",
-  137: process.env.POLYGON_RPC || "https://polygon-rpc.com",
-  8453: process.env.BASE_RPC || "https://mainnet.base.org"
+  1: [
+    process.env.ETHEREUM_RPC || "https://eth.llamarpc.com",
+    "https://rpc.ankr.com/eth",
+    "https://ethereum.publicnode.com"
+  ],
+  56: [
+    process.env.BSC_RPC || "https://bsc-dataseed.binance.org",
+    "https://bsc-dataseed1.defibit.io",
+    "https://bsc-dataseed1.ninicoin.io",
+    "https://rpc.ankr.com/bsc"
+  ],
+  137: [
+    process.env.POLYGON_RPC || "https://polygon-rpc.com",
+    "https://rpc.ankr.com/polygon"
+  ],
+  8453: [
+    process.env.BASE_RPC || "https://mainnet.base.org",
+    "https://base.llamarpc.com"
+  ]
 };
 
 // ERC20 ABI for token info
@@ -124,46 +139,63 @@ function extractTokenData(lockLog, eventName, source) {
   }
 }
 
-// Fetch token metadata from blockchain
+// Fetch token metadata from blockchain with RPC fallbacks
 async function getTokenInfo(tokenAddress, chainId) {
-  try {
-    console.log(`Fetching token info for ${tokenAddress} on chain ${chainId}`);
-    
-    const rpcUrl = RPC_URLS[chainId];
-    if (!rpcUrl) {
-      console.error(`No RPC URL for chain ${chainId}`);
-      return null;
-    }
-    
-    console.log(`Using RPC: ${rpcUrl}`);
-    
-    // Validate address format - use utils for v5 compatibility
-    if (!tokenAddress || !ethers.utils.isAddress(tokenAddress)) {
-      console.error(`Invalid token address: ${tokenAddress}`);
-      return null;
-    }
-    
-    // ethers v5 syntax (which is what you have based on the require statement)
-    const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-    const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-    
-    const [symbol, decimals, totalSupply] = await Promise.all([
-      contract.symbol().catch(e => { console.error("Symbol fetch error:", e.message); throw e; }),
-      contract.decimals().catch(e => { console.error("Decimals fetch error:", e.message); throw e; }),
-      contract.totalSupply().catch(e => { console.error("TotalSupply fetch error:", e.message); throw e; })
-    ]);
-    
-    console.log(`✅ Token info: ${symbol}, decimals: ${decimals}`);
-    
-    return { 
-      symbol, 
-      decimals: Number(decimals), 
-      totalSupply: totalSupply.toString() 
-    };
-  } catch (err) {
-    console.error("Token info fetch error:", err.message, err.stack);
+  const rpcUrls = RPC_URLS[chainId];
+  if (!rpcUrls || rpcUrls.length === 0) {
+    console.error(`No RPC URLs for chain ${chainId}`);
     return null;
   }
+  
+  // Validate address format
+  if (!tokenAddress || !ethers.utils.isAddress(tokenAddress)) {
+    console.error(`Invalid token address: ${tokenAddress}`);
+    return null;
+  }
+  
+  // Try each RPC endpoint
+  for (let i = 0; i < rpcUrls.length; i++) {
+    const rpcUrl = rpcUrls[i];
+    try {
+      console.log(`[Attempt ${i + 1}/${rpcUrls.length}] Fetching token info for ${tokenAddress} on chain ${chainId}`);
+      console.log(`Using RPC: ${rpcUrl}`);
+      
+      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+      const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      
+      console.log(`Calling contract methods...`);
+      
+      // Add timeout for each call
+      const timeout = (ms) => new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+      );
+      
+      const [symbol, decimals, totalSupply] = await Promise.all([
+        Promise.race([contract.symbol(), timeout(5000)]),
+        Promise.race([contract.decimals(), timeout(5000)]),
+        Promise.race([contract.totalSupply(), timeout(5000)])
+      ]);
+      
+      console.log(`✅ Token info: ${symbol}, decimals: ${decimals}`);
+      
+      return { 
+        symbol, 
+        decimals: Number(decimals), 
+        totalSupply: totalSupply.toString() 
+      };
+    } catch (err) {
+      console.error(`❌ RPC ${rpcUrl} failed:`, err.message);
+      // If this was the last RPC, return null
+      if (i === rpcUrls.length - 1) {
+        console.error("All RPCs failed for token info");
+        return null;
+      }
+      // Otherwise continue to next RPC
+      console.log(`Trying next RPC...`);
+    }
+  }
+  
+  return null;
 }
 
 // Fetch price and security data
@@ -404,6 +436,11 @@ module.exports = async (req, res) => {
     
     // PART 3: Continue enrichment in background (best effort)
     (async () => {
+      // Set a maximum execution time for the entire enrichment
+      const enrichmentTimeout = setTimeout(() => {
+        console.error("⚠️ Enrichment timeout - updating message with partial data");
+      }, 25000); // 25 seconds max
+      
       try {
         console.log("Starting background enrichment...");
         
@@ -418,6 +455,7 @@ module.exports = async (req, res) => {
         if (!tokenData.tokenAddress) {
           console.log("⚠️ Could not extract token address");
           await editTelegramMessage(messageId, basicMessage.replace("⏳ _Fetching token details..._", "⚠️ Could not extract token address"));
+          clearTimeout(enrichmentTimeout);
           return;
         }
         
@@ -433,6 +471,7 @@ module.exports = async (req, res) => {
             `⚠️ Could not fetch token info\n\nToken: \`${tokenData.tokenAddress}\``
           );
           await editTelegramMessage(messageId, failMessage);
+          clearTimeout(enrichmentTimeout);
           return;
         }
         
@@ -594,8 +633,10 @@ module.exports = async (req, res) => {
         await editTelegramMessage(messageId, enrichedMessage);
         
         console.log("✅ Enriched message updated successfully");
+        clearTimeout(enrichmentTimeout);
         
       } catch (enrichError) {
+        clearTimeout(enrichmentTimeout);
         console.error("❌ Enrichment failed:", enrichError.message, enrichError.stack);
         
         // Try to at least show the token address if we have it
