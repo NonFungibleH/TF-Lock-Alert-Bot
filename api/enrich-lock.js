@@ -96,7 +96,7 @@ function extractTokenData(lockLog, eventName, source) {
       return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
     }
     
-    if (eventName === "DepositNFT" || eventName === "onLock") {
+    if (eventName === "DepositNFT") {
       const tokenAddress = topicsArray[2] ? `0x${topicsArray[2].slice(26)}` : null;
       if (data.length >= 130) {
         const amountHex = data.slice(2, 66);
@@ -106,6 +106,48 @@ function extractTokenData(lockLog, eventName, source) {
         return { tokenAddress, amount, unlockTime, version: "V3" };
       }
       return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
+    }
+    
+    if (eventName === "onLock" && source === "UNCX") {
+      // UNCX V3 LP lock - data structure:
+      // Offset 0-63: lock_id
+      // Offset 64-127: nftPositionManager
+      // Offset 128-191: nft_id
+      // Offset 192-255: owner
+      // Offset 256-319: additionalCollector
+      // Offset 320-383: collectAddress
+      // Offset 384-447: unlockDate ← THIS IS WHAT WE NEED
+      // Offset 448-511: countryCode
+      // Offset 512-575: collectFee
+      // Offset 576-639: poolAddress
+      // Offset 640+: position tuple
+      //   - Offset 768-831: token0 ← THIS IS WHAT WE NEED
+      //   - Offset 832-895: token1 ← THIS IS WHAT WE NEED
+      
+      if (data.length >= 896) {
+        // Extract unlock time (offset 384, length 64 chars)
+        const unlockHex = data.slice(386, 450); // 386 = 2 (for 0x) + 384
+        const unlockTime = parseInt(unlockHex, 16);
+        
+        // Extract token0 (offset 768, last 40 chars of 64-char word)
+        const token0 = `0x${data.slice(794, 834)}`; // 794 = 2 + 768 + 24
+        
+        // Extract token1 (offset 832, last 40 chars of 64-char word)  
+        const token1 = `0x${data.slice(858, 898)}`; // 858 = 2 + 832 + 24
+        
+        console.log(`UNCX LP Lock: token0=${token0}, token1=${token1}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
+        
+        // Return token0 as the primary token
+        return { 
+          tokenAddress: token0, 
+          token1: token1,
+          amount: null, // LP positions don't have a single "amount"
+          unlockTime, 
+          version: "UNCX V3",
+          isLPLock: true
+        };
+      }
+      return { tokenAddress: null, amount: null, unlockTime: null, version: "UNCX V3" };
     }
     
     return { tokenAddress: null, amount: null, unlockTime: null, version: "Unknown" };
