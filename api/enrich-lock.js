@@ -163,60 +163,86 @@ async function getTokenInfo(tokenAddress, chainId) {
   return null;
 }
 
+async function getTokenInfo(tokenAddress, chainId) {
+  const rpcUrls = RPC_URLS[chainId];
+  if (!rpcUrls || rpcUrls.length === 0) {
+    console.error(`No RPC URLs for chain ${chainId}`);
+    return null;
+  }
+  
+  if (!tokenAddress || !ethers.utils.isAddress(tokenAddress)) {
+    console.error(`Invalid token address: ${tokenAddress}`);
+    return null;
+  }
+  
+  for (let i = 0; i < rpcUrls.length; i++) {
+    const rpcUrl = rpcUrls[i];
+    try {
+      console.log(`[Attempt ${i + 1}/${rpcUrls.length}] Using RPC: ${rpcUrl}`);
+      
+      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+      const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+      
+      const timeout = (ms) => new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+      );
+      
+      const [symbol, decimals, totalSupply] = await Promise.all([
+        Promise.race([contract.symbol(), timeout(3000)]),
+        Promise.race([contract.decimals(), timeout(3000)]),
+        Promise.race([contract.totalSupply(), timeout(3000)])
+      ]);
+      
+      console.log(`✅ Token info: ${symbol}, decimals: ${decimals}`);
+      
+      return { 
+        symbol, 
+        decimals: Number(decimals), 
+        totalSupply: totalSupply.toString() 
+      };
+    } catch (err) {
+      console.error(`❌ RPC ${rpcUrl} failed:`, err.message);
+      if (i === rpcUrls.length - 1) {
+        return null;
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Fetch BNB/ETH price for native token display
+async function getNativeTokenPrice(chainId) {
+  try {
+    const nativeTokens = {
+      1: 'ethereum',
+      56: 'binancecoin', 
+      137: 'matic-network',
+      8453: 'ethereum'
+    };
+    
+    const tokenId = nativeTokens[chainId];
+    if (!tokenId) return null;
+    
+    const response = await axios.get(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=usd`,
+      { timeout: 3000 }
+    );
+    
+    return response.data?.[tokenId]?.usd || null;
+  } catch (err) {
+    console.error("Native token price fetch error:", err.message);
+    return null;
+  }
+}
+
+// Fetch price and security data
 async function enrichTokenData(tokenAddress, chainId) {
   try {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId];
     
-    let price = null, liquidity = null, marketCap = null, pairCreatedAt = null;
-    try {
-      const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
-      const dexRes = await axios.get(dexUrl, { timeout: 5000 });
-      
-      if (dexRes.data?.pairs?.length > 0) {
-        const pair = dexRes.data.pairs[0];
-        price = parseFloat(pair.priceUsd) || null;
-        liquidity = parseFloat(pair.liquidity?.usd) || null;
-        marketCap = parseFloat(pair.marketCap) || null;
-        pairCreatedAt = pair.pairCreatedAt || null;
-      }
-    } catch (dexError) {
-      console.error(`DexScreener error:`, dexError.message);
-    }
-    
-    let securityFlags = {};
-    try {
-      const goplusUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainName}?contract_addresses=${tokenAddress}`;
-      console.log(`Fetching GoPlus: ${goplusUrl}`);
-      const goplusRes = await axios.get(goplusUrl, { timeout: 5000 });
-      
-      console.log(`GoPlus response status:`, goplusRes.status);
-      console.log(`GoPlus raw response:`, JSON.stringify(goplusRes.data, null, 2));
-      
-      const secData = goplusRes.data?.result?.[tokenAddress.toLowerCase()];
-      if (secData) {
-        securityFlags = {
-          isHoneypot: secData.is_honeypot === "1",
-          isOpenSource: secData.is_open_source === "1",
-          holderCount: parseInt(secData.holder_count) || 0,
-          ownerBalance: parseFloat(secData.owner_percent) || 0,
-          canTakeBackOwnership: secData.can_take_back_ownership === "1",
-          topHolderPercent: parseFloat(secData.holder_count_top10_percent) || 0,
-          lpHolderCount: parseInt(secData.lp_holder_count) || 0,
-          lpTotalSupply: parseFloat(secData.lp_total_supply) || 0,
-          isLpLocked: secData.is_true_token === "1" || secData.is_airdrop_scam === "0"
-        };
-      }
-    } catch (goplusError) {
-      console.error(`GoPlus error:`, goplusError.message);
-    }
-    
-    return { price, liquidity, marketCap, pairCreatedAt, securityFlags };
-  } catch (err) {
-    console.error("Enrichment error:", err.message);
-    return { price: null, liquidity: null, marketCap: null, pairCreatedAt: null, securityFlags: {} };
-  }
-}
+    console.log(`Starting enrichment for ${tokenAddress} on ${chainName}`);
 
 function formatDuration(unlockTime) {
   if (!unlockTime) return "Unknown";
