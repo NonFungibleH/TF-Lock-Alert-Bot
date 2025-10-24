@@ -350,8 +350,14 @@ module.exports = async (req, res) => {
     
     console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}`);
     
-    // Get native token price for display
-    const nativePrice = await getNativeTokenPrice(chainId);
+    // Get native token price for display (optional - don't fail if it errors)
+    let nativePrice = null;
+    try {
+      nativePrice = await getNativeTokenPrice(chainId);
+    } catch (err) {
+      console.error("Failed to get native token price:", err.message);
+    }
+    
     const nativeSymbols = { 1: 'ETH', 56: 'BNB', 137: 'MATIC', 8453: 'ETH' };
     const nativeSymbol = nativeSymbols[chainId] || 'ETH';
     
