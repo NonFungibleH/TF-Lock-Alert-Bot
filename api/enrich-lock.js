@@ -350,6 +350,11 @@ module.exports = async (req, res) => {
     
     console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}`);
     
+    // Get native token price for display
+    const nativePrice = await getNativeTokenPrice(chainId);
+    const nativeSymbols = { 1: 'ETH', 56: 'BNB', 137: 'MATIC', 8453: 'ETH' };
+    const nativeSymbol = nativeSymbols[chainId] || 'ETH';
+    
     // Calculate percentages
     const lockedPercent = amount && tokenInfo.totalSupply 
       ? ((amount / (Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals))) * 100).toFixed(2)
@@ -360,7 +365,7 @@ module.exports = async (req, res) => {
       : null;
     
     // Build message
-    const parts = ["🔒 **NEW LOCK DETECTED**", ""];
+    const parts = ["🔒 **New lock detected**", ""];
     
     parts.push("💎 **TOKEN INFO**");
     parts.push(`Token: $${tokenInfo.symbol}`);
@@ -382,18 +387,19 @@ module.exports = async (req, res) => {
     
     if (enriched.liquidity) {
       const liqStr = enriched.liquidity >= 1000000
-        ? `$${(enriched.liquidity / 1000000).toFixed(2)}M`
-        : `$${(enriched.liquidity / 1000).toFixed(1)}K`;
+        ? `${(enriched.liquidity / 1000000).toFixed(2)}M`
+        : `${(enriched.liquidity / 1000).toFixed(1)}K`;
       parts.push(`Liquidity: ${liqStr}`);
-    }
-    
-    if (enriched.securityFlags.holderCount) {
-      parts.push(`Holders: ${enriched.securityFlags.holderCount.toLocaleString()}`);
     }
     
     const contractAge = formatContractAge(enriched.pairCreatedAt);
     if (contractAge) {
       parts.push(`Age: ${contractAge}`);
+    }
+    
+    // Add holder count in TOKEN INFO section
+    if (enriched.securityFlags.holderCount) {
+      parts.push(`Holders: ${enriched.securityFlags.holderCount.toLocaleString()}`);
     }
     
     parts.push("");
@@ -426,7 +432,9 @@ module.exports = async (req, res) => {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId] || "ethereum";
     
-    parts.push(`[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress}) | [DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress}) | [TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
+    parts.push(`[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress})`);
+    parts.push(`[DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress})`);
+    parts.push(`[TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
     
     const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
     if (buyLink) {
@@ -435,7 +443,7 @@ module.exports = async (req, res) => {
     
     parts.push("");
     
-    // Security section
+    // QUICK CHECK section (security flags) - moved here after LINKS
     const hasSecurityInfo = enriched.securityFlags && Object.keys(enriched.securityFlags).length > 0;
     
     if (hasSecurityInfo) {
