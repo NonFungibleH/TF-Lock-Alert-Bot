@@ -163,6 +163,31 @@ async function getTokenInfo(tokenAddress, chainId) {
   return null;
 }
 
+// Fetch BNB/ETH price for native token display
+async function getNativeTokenPrice(chainId) {
+  try {
+    const nativeTokens = {
+      1: 'ethereum',
+      56: 'binancecoin', 
+      137: 'matic-network',
+      8453: 'ethereum'
+    };
+    
+    const tokenId = nativeTokens[chainId];
+    if (!tokenId) return null;
+    
+    const response = await axios.get(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=usd`,
+      { timeout: 3000 }
+    );
+    
+    return response.data?.[tokenId]?.usd || null;
+  } catch (err) {
+    console.error("Native token price fetch error:", err.message);
+    return null;
+  }
+}
+
 async function enrichTokenData(tokenAddress, chainId) {
   try {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
