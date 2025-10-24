@@ -172,35 +172,30 @@ module.exports = async (req, res) => {
       
       console.log(`🔗 Enrichment URL: ${enrichmentUrl}`);
       
-      // Trigger enrichment (fire and forget)
-      setImmediate(async () => {
-        try {
-          console.log(`🚀 Triggering enrichment for txHash: ${txHash}`);
-          
-          const enrichResponse = await axios.post(enrichmentUrl, {
-            messageId,
-            txHash,
-            chainId,
-            lockLog,
-            eventName,
-            source,
-            explorerLink,
-            chain: chain.name
-          }, {
-            timeout: 3000,
-            headers: {
-              'Content-Type': 'application/json'
-            }
-          });
-          
-          console.log(`✅ Enrichment triggered successfully:`, enrichResponse.data);
-        } catch (enrichErr) {
-          console.error(`❌ Enrichment trigger failed:`, enrichErr.message);
-          if (enrichErr.response) {
-            console.error(`Response status: ${enrichErr.response.status}`);
-            console.error(`Response data:`, enrichErr.response.data);
+      // Trigger enrichment (true fire-and-forget - don't wait for response)
+      setImmediate(() => {
+        axios.post(enrichmentUrl, {
+          messageId,
+          txHash,
+          chainId,
+          lockLog,
+          eventName,
+          source,
+          explorerLink,
+          chain: chain.name
+        }, {
+          timeout: 30000, // 30 seconds for enrichment to complete
+          headers: {
+            'Content-Type': 'application/json'
           }
-        }
+        }).then(response => {
+          console.log(`✅ Enrichment completed:`, response.data);
+        }).catch(enrichErr => {
+          console.error(`❌ Enrichment failed:`, enrichErr.message);
+          if (enrichErr.response) {
+            console.error(`Status: ${enrichErr.response.status}, Data:`, enrichErr.response.data);
+          }
+        });
       });
     } catch (urlErr) {
       console.error("⚠️ Failed to build enrichment URL:", urlErr.message);
