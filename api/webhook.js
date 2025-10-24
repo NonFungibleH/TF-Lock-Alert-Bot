@@ -76,6 +76,15 @@ function toDecChainId(chainIdInput) {
 
 module.exports = async (req, res) => {
   try {
+    // Health check endpoint
+    if (req.method === "GET") {
+      return res.status(200).json({ 
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+        telegram: !!(TELEGRAM_TOKEN && TELEGRAM_GROUP_CHAT_ID)
+      });
+    }
+    
     if (req.method !== "POST") return res.status(200).json({ ok: true });
     
     const body = req.body || {};
@@ -155,35 +164,47 @@ module.exports = async (req, res) => {
       messageId
     });
     
-    // PART 3: Trigger enrichment via separate endpoint (won't be killed)
-    // Build the enrichment URL - use VERCEL_URL if available, otherwise needs manual config
-    const baseUrl = process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}` 
-      : process.env.BASE_URL || 'http://localhost:3000';
-    const enrichmentUrl = `${baseUrl}/api/enrich-lock`;
-    
+    // PART 3: Trigger enrichment via separate endpoint
+    // Build enrichment URL - use production domain
     try {
-      console.log(`Triggering enrichment at: ${enrichmentUrl} for txHash: ${txHash}`);
+      const baseUrl = process.env.BASE_URL || 'https://tf-lock-alert-bot.vercel.app';
+      const enrichmentUrl = `${baseUrl}/api/enrich-lock`;
       
-      // Fire and forget - don't await, just trigger it
-      axios.post(enrichmentUrl, {
-        messageId,
-        txHash,  // Important: pass txHash for duplicate detection
-        chainId,
-        lockLog,
-        eventName,
-        source,
-        explorerLink,
-        chain: chain.name
-      }, {
-        timeout: 2000
-      }).catch(err => {
-        console.log("Enrichment trigger error (non-blocking):", err.message);
+      console.log(`🔗 Enrichment URL: ${enrichmentUrl}`);
+      
+      // Trigger enrichment (fire and forget)
+      setImmediate(async () => {
+        try {
+          console.log(`🚀 Triggering enrichment for txHash: ${txHash}`);
+          
+          const enrichResponse = await axios.post(enrichmentUrl, {
+            messageId,
+            txHash,
+            chainId,
+            lockLog,
+            eventName,
+            source,
+            explorerLink,
+            chain: chain.name
+          }, {
+            timeout: 3000,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          });
+          
+          console.log(`✅ Enrichment triggered successfully:`, enrichResponse.data);
+        } catch (enrichErr) {
+          console.error(`❌ Enrichment trigger failed:`, enrichErr.message);
+          if (enrichErr.response) {
+            console.error(`Response status: ${enrichErr.response.status}`);
+            console.error(`Response data:`, enrichErr.response.data);
+          }
+        }
       });
-      
-      console.log("✅ Enrichment triggered in separate function");
-    } catch (err) {
-      console.error("Failed to trigger enrichment:", err.message);
+    } catch (urlErr) {
+      console.error("⚠️ Failed to build enrichment URL:", urlErr.message);
+      // Continue anyway, webhook already responded
     }
     
   } catch (err) {
