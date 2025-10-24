@@ -163,54 +163,6 @@ async function getTokenInfo(tokenAddress, chainId) {
   return null;
 }
 
-async function getTokenInfo(tokenAddress, chainId) {
-  const rpcUrls = RPC_URLS[chainId];
-  if (!rpcUrls || rpcUrls.length === 0) {
-    console.error(`No RPC URLs for chain ${chainId}`);
-    return null;
-  }
-  
-  if (!tokenAddress || !ethers.utils.isAddress(tokenAddress)) {
-    console.error(`Invalid token address: ${tokenAddress}`);
-    return null;
-  }
-  
-  for (let i = 0; i < rpcUrls.length; i++) {
-    const rpcUrl = rpcUrls[i];
-    try {
-      console.log(`[Attempt ${i + 1}/${rpcUrls.length}] Using RPC: ${rpcUrl}`);
-      
-      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-      const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-      
-      const timeout = (ms) => new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
-      );
-      
-      const [symbol, decimals, totalSupply] = await Promise.all([
-        Promise.race([contract.symbol(), timeout(3000)]),
-        Promise.race([contract.decimals(), timeout(3000)]),
-        Promise.race([contract.totalSupply(), timeout(3000)])
-      ]);
-      
-      console.log(`✅ Token info: ${symbol}, decimals: ${decimals}`);
-      
-      return { 
-        symbol, 
-        decimals: Number(decimals), 
-        totalSupply: totalSupply.toString() 
-      };
-    } catch (err) {
-      console.error(`❌ RPC ${rpcUrl} failed:`, err.message);
-      if (i === rpcUrls.length - 1) {
-        return null;
-      }
-    }
-  }
-  
-  return null;
-}
-
 // Fetch BNB/ETH price for native token display
 async function getNativeTokenPrice(chainId) {
   try {
@@ -229,20 +181,42 @@ async function getNativeTokenPrice(chainId) {
       { timeout: 3000 }
     );
     
-    return response.data?.[tokenId]?.usd || null;
+    return response.data[tokenId]?.usd || null;
   } catch (err) {
-    console.error("Native token price fetch error:", err.message);
+    console.error("Failed to fetch native token price:", err.message);
     return null;
   }
 }
 
-// Fetch price and security data
+// Enrichment function - fetches price, liquidity, security data
 async function enrichTokenData(tokenAddress, chainId) {
   try {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId];
     
     console.log(`Starting enrichment for ${tokenAddress} on ${chainName}`);
+    
+    // Return empty enrichment data for now
+    // TODO: Add actual API calls to fetch price, liquidity, and security data
+    return {
+      price: null,
+      marketCap: null,
+      liquidity: null,
+      pairCreatedAt: null,
+      securityFlags: {}
+    };
+    
+  } catch (err) {
+    console.error("Enrichment error:", err);
+    return {
+      price: null,
+      marketCap: null,
+      liquidity: null,
+      pairCreatedAt: null,
+      securityFlags: {}
+    };
+  }
+}
 
 function formatDuration(unlockTime) {
   if (!unlockTime) return "Unknown";
