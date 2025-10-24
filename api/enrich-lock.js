@@ -278,8 +278,12 @@ const enrichmentCache = new Map();
 const CACHE_TTL = 600000; // 10 minutes
 
 module.exports = async (req, res) => {
+  const startTime = Date.now();
+  
   try {
-    console.log("🔄 Starting enrichment process...");
+    console.log("🔄 Enrichment endpoint called");
+    console.log("Method:", req.method);
+    console.log("Body keys:", Object.keys(req.body || {}));
     
     const { messageId, txHash, chainId, lockLog, eventName, source, explorerLink, chain } = req.body;
     
