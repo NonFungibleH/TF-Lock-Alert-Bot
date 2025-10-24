@@ -127,11 +127,11 @@ async function getTokenInfo(tokenAddress, chainId) {
     return null;
   }
   
-  for (let i = 0; i < rpcUrls.length; i++) {
-    const rpcUrl = rpcUrls[i];
+  console.log(`Trying ${rpcUrls.length} RPCs in parallel for faster response...`);
+  
+  // Try ALL RPCs in parallel, use first successful response
+  const attempts = rpcUrls.map(async (rpcUrl) => {
     try {
-      console.log(`[Attempt ${i + 1}/${rpcUrls.length}] Using RPC: ${rpcUrl}`);
-      
       const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
       const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
       
@@ -140,27 +140,34 @@ async function getTokenInfo(tokenAddress, chainId) {
       );
       
       const [symbol, decimals, totalSupply] = await Promise.all([
-        Promise.race([contract.symbol(), timeout(3000)]),
-        Promise.race([contract.decimals(), timeout(3000)]),
-        Promise.race([contract.totalSupply(), timeout(3000)])
+        Promise.race([contract.symbol(), timeout(5000)]),
+        Promise.race([contract.decimals(), timeout(5000)]),
+        Promise.race([contract.totalSupply(), timeout(5000)])
       ]);
       
-      console.log(`✅ Token info: ${symbol}, decimals: ${decimals}`);
+      console.log(`✅ Token info from ${rpcUrl}: ${symbol}, decimals: ${decimals}`);
       
       return { 
         symbol, 
         decimals: Number(decimals), 
-        totalSupply: totalSupply.toString() 
+        totalSupply: totalSupply.toString(),
+        rpcUsed: rpcUrl
       };
     } catch (err) {
       console.error(`❌ RPC ${rpcUrl} failed:`, err.message);
-      if (i === rpcUrls.length - 1) {
-        return null;
-      }
+      throw err; // Reject this promise so Promise.any ignores it
     }
-  }
+  });
   
-  return null;
+  // Return first successful result
+  try {
+    const result = await Promise.any(attempts);
+    console.log(`✅ Got token info from: ${result.rpcUsed}`);
+    return result;
+  } catch (err) {
+    console.error('❌ All RPCs failed for token:', tokenAddress);
+    return null;
+  }
 }
 
 // Fetch BNB/ETH price for native token display
