@@ -129,6 +129,9 @@ function extractTokenData(lockLog, eventName, source) {
         const unlockHex = data.slice(386, 450); // 386 = 2 (for 0x) + 384
         const unlockTime = parseInt(unlockHex, 16);
         
+        // Extract pool address (offset 576, last 40 chars of 64-char word)
+        const poolAddress = `0x${data.slice(602, 642)}`; // 602 = 2 + 576 + 24
+        
         // Extract token0 (offset 768, last 40 chars of 64-char word)
         const token0 = `0x${data.slice(794, 834)}`; // 794 = 2 + 768 + 24
         
@@ -138,12 +141,40 @@ function extractTokenData(lockLog, eventName, source) {
         // Extract FULL LP position data
         const lpPosition = extractLPPositionData(lockLog);
         
-        console.log(`UNCX LP Lock: token0=${token0}, token1=${token1}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
+        // Smart token selection: pick the non-wrapped native token
+        const wrappedNativeTokens = [
+          '0x4200000000000000000000000000000000000006', // WETH on Base
+          '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH on Ethereum
+          '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', // WBNB on BSC
+          '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270', // WMATIC on Polygon
+        ];
         
-        // Return token0 as the primary token
+        const token0Lower = token0.toLowerCase();
+        const token1Lower = token1.toLowerCase();
+        
+        let primaryToken, pairedToken, isPrimaryToken0;
+        if (wrappedNativeTokens.includes(token0Lower)) {
+          primaryToken = token1;
+          pairedToken = token0;
+          isPrimaryToken0 = false;
+        } else if (wrappedNativeTokens.includes(token1Lower)) {
+          primaryToken = token0;
+          pairedToken = token1;
+          isPrimaryToken0 = true;
+        } else {
+          // Neither is wrapped native, default to token0
+          primaryToken = token0;
+          pairedToken = token1;
+          isPrimaryToken0 = true;
+        }
+        
+        console.log(`UNCX LP Lock: token0=${token0}, token1=${token1}, primary=${primaryToken}, pool=${poolAddress}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
+        
         return { 
-          tokenAddress: token0, 
-          token1: token1,
+          tokenAddress: primaryToken, 
+          token1: pairedToken,
+          poolAddress,
+          isPrimaryToken0,
           amount: null, // LP positions don't have a single "amount"
           unlockTime, 
           version: "UNCX V3",
@@ -261,8 +292,90 @@ function extractLPPositionData(lockLog) {
     const feeTier = parseInt(feeHex, 16);
     
     // Extract tick range (int24 at offsets 960 and 1024)
-    const tickLowerHex = data.slice(962, 1026);
-    const tickUpperHex = data.slice(1026, 1090);
+    // int24 is only the last 3 bytes (6 hex chars) of the 32-byte word
+    const tickLowerHex = data.slice(1020, 1026); // Last 6 chars of the word
+    const tickUpperHex = data.slice(1084, 1090); // Last 6 chars of the word
+    
+    let tickLower = parseInt(tickLowerHex, 16);
+    if (tickLower > 0x7FFFFF) tickLower -= 0x1000000; // Handle negative int24
+    
+    let tickUpper = parseInt(tickUpperHex, 16);
+    if (tickUpper > 0x7FFFFF) tickUpper -= 0x1000000; // Handle negative int24
+    
+    // Extract uncollected fees (uint128 at offsets 1280 and 1344)
+    const tokensOwed0Hex = data.slice(1282, 1346);
+    const tokensOwed1Hex = data.slice(1346, 1410);
+    const tokensOwed0 = BigInt(`0x${tokensOwed0Hex}`);
+    const tokensOwed1 = BigInt(`0x${tokensOwed1Hex}`);
+    
+    console.log(`✅ LP Position: liquidity=${liquidity}, feeTier=${feeTier/10000}%, ticks=[${tickLower},${tickUpper}]`);
+    
+    return { liquidity, feeTier, tickLower, tickUpper, tokensOwed0, tokensOwed1 };
+  } catch (err) {
+    console.error("LP position extraction error:", err.message);
+    return null;
+  }
+}
+
+// Calculate token amounts from Uniswap V3 LP position
+// This uses the Uniswap V3 math to convert liquidity + ticks to actual token amounts
+function calculateTokenAmountsFromPosition(liquidity, tickLower, tickUpper, currentTick) {
+  try {
+    const Q96 = BigInt(2) ** BigInt(96);
+    const liquidityBN = BigInt(liquidity);
+    
+    // Get sqrt price at ticks
+    const sqrtPriceLower = BigInt(Math.floor(Math.sqrt(1.0001 ** tickLower) * Number(Q96)));
+    const sqrtPriceUpper = BigInt(Math.floor(Math.sqrt(1.0001 ** tickUpper) * Number(Q96)));
+    const sqrtPriceCurrent = BigInt(Math.floor(Math.sqrt(1.0001 ** currentTick) * Number(Q96)));
+    
+    let amount0 = BigInt(0);
+    let amount1 = BigInt(0);
+    
+    if (currentTick < tickLower) {
+      // Position is entirely in token0
+      amount0 = (liquidityBN * Q96 * (sqrtPriceUpper - sqrtPriceLower)) / (sqrtPriceUpper * sqrtPriceLower);
+    } else if (currentTick >= tickUpper) {
+      // Position is entirely in token1
+      amount1 = (liquidityBN * (sqrtPriceUpper - sqrtPriceLower)) / Q96;
+    } else {
+      // Position is in range, contains both tokens
+      amount0 = (liquidityBN * Q96 * (sqrtPriceUpper - sqrtPriceCurrent)) / (sqrtPriceUpper * sqrtPriceCurrent);
+      amount1 = (liquidityBN * (sqrtPriceCurrent - sqrtPriceLower)) / Q96;
+    }
+    
+    return {
+      amount0: amount0.toString(),
+      amount1: amount1.toString()
+    };
+  } catch (err) {
+    console.error("Error calculating token amounts:", err.message);
+    return null;
+  }
+}
+
+// Extract COMPLETE LP position data from UNCX V3 lock
+  try {
+    const data = lockLog.data || "0x";
+    
+    // Position tuple: liquidity at offset 1088, fee at 896, ticks at 960/1024, fees at 1280/1344
+    if (data.length < 1408) {
+      console.log(`Data too short for full LP extraction: ${data.length} chars`);
+      return null;
+    }
+    
+    // Extract liquidity (uint128 at offset 1088)
+    const liquidityHex = data.slice(1090, 1154);
+    const liquidity = BigInt(`0x${liquidityHex}`);
+    
+    // Extract fee tier (uint24 at offset 896)
+    const feeHex = data.slice(898, 962);
+    const feeTier = parseInt(feeHex, 16);
+    
+    // Extract tick range (int24 at offsets 960 and 1024)
+    // int24 is only 3 bytes, so take last 6 hex chars (3 bytes) of 32-byte word
+    const tickLowerHex = data.slice(1020, 1026); // Last 6 chars of 64-char word at offset 960
+    const tickUpperHex = data.slice(1084, 1090); // Last 6 chars of 64-char word at offset 1024
     
     let tickLower = parseInt(tickLowerHex, 16);
     if (tickLower > 0x7FFFFF) tickLower -= 0x1000000;
@@ -286,7 +399,7 @@ function extractLPPositionData(lockLog) {
 }
 
 // Enrichment function - fetches price, MC, liquidity, holders from DexScreener/DexTools
-async function enrichTokenData(tokenAddress, chainId) {
+async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
   try {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId];
@@ -336,6 +449,7 @@ async function enrichTokenData(tokenAddress, chainId) {
             marketCap: bestPair.marketCap || null,
             liquidity: bestPair.liquidity?.usd || null,
             pairName: `${bestPair.baseToken?.symbol || ''}/${bestPair.quoteToken?.symbol || ''}`,
+            pairAddress: bestPair.pairAddress || null,
             securityData,
             source: 'DexScreener'
           };
@@ -556,14 +670,34 @@ module.exports = async (req, res) => {
     const nativeSymbols = { 1: 'ETH', 56: 'BNB', 137: 'MATIC', 8453: 'ETH' };
     const nativeSymbol = nativeSymbols[chainId] || 'ETH';
     
-    // Calculate percentages
-    const lockedPercent = amount && tokenInfo.totalSupply 
-      ? ((amount / (Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals))) * 100).toFixed(2)
-      : null;
+    // Calculate percentages and values
+    let lockedPercent = null;
+    let usdValue = null;
+    let pairedTokenAmount = null;
     
-    const usdValue = amount && enriched.price 
-      ? (amount * enriched.price).toFixed(2)
-      : null;
+    if (tokenData.isLPLock && tokenData.lpPosition) {
+      // For LP locks: We can't easily calculate exact token amounts without current tick
+      // But we CAN show % of the primary token's supply if we had its amount
+      // For now, show the LP token amount and note that % calculation requires pool state
+      
+      // Note: To properly calculate % and USD value, we'd need:
+      // 1. Current tick from the pool contract
+      // 2. Calculate token amounts from liquidity + ticks
+      // This requires additional RPC calls which we'll skip for now
+      
+      lockedPercent = null; // TODO: Calculate when we have token amounts
+      usdValue = null; // TODO: Calculate when we have token amounts  
+      pairedTokenAmount = null; // TODO: Calculate from LP position
+    } else if (amount) {
+      // For regular token locks: calculate from amount
+      lockedPercent = tokenInfo.totalSupply 
+        ? ((amount / (Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals))) * 100).toFixed(2)
+        : null;
+      
+      usdValue = enriched.price 
+        ? (amount * enriched.price).toFixed(2)
+        : null;
+    }
     
     // Build message
     const parts = ["🔒 **New lock detected**", ""];
