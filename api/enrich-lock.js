@@ -4,7 +4,7 @@ const { ethers } = require("ethers");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
 
-// RPC endpoints - Use env vars first, then fallback to premium public RPCs
+// RPC endpoints
 const RPC_URLS = {
   1: [
     process.env.ETHEREUM_RPC,
@@ -45,7 +45,79 @@ const ERC20_ABI = [
   "function totalSupply() view returns (uint256)"
 ];
 
-// All the helper functions from webhook.js
+// Extract COMPLETE LP position data from UNCX V3 lock
+function extractLPPositionData(lockLog) {
+  try {
+    const data = lockLog.data || "0x";
+    
+    /* Position tuple structure (starts at offset 640 in hex, or byte 320):
+     * Each field is 32 bytes (64 hex chars) in the ABI encoding
+     * 
+     * Offset 640 (0x280): nonce (uint96) - padded to 32 bytes
+     * Offset 704 (0x2c0): operator (address) - padded to 32 bytes
+     * Offset 768 (0x300): token0 (address) - padded to 32 bytes  ✓ Already extracted
+     * Offset 832 (0x340): token1 (address) - padded to 32 bytes  ✓ Already extracted
+     * Offset 896 (0x380): fee (uint24) - padded to 32 bytes
+     * Offset 960 (0x3c0): tickLower (int24) - padded to 32 bytes
+     * Offset 1024 (0x400): tickUpper (int24) - padded to 32 bytes
+     * Offset 1088 (0x440): liquidity (uint128) - padded to 32 bytes  ← CRITICAL
+     * Offset 1152 (0x480): feeGrowthInside0LastX128 (uint256)
+     * Offset 1216 (0x4c0): feeGrowthInside1LastX128 (uint256)
+     * Offset 1280 (0x500): tokensOwed0 (uint128) - padded to 32 bytes
+     * Offset 1344 (0x540): tokensOwed1 (uint128) - padded to 32 bytes
+     */
+    
+    if (data.length < 1408) { // Need at least up to tokensOwed1
+      console.log(`Data too short for full LP extraction: ${data.length} chars`);
+      return null;
+    }
+    
+    // Extract liquidity (uint128 at offset 1088)
+    const liquidityHex = data.slice(1090, 1154); // 1090 = 2 + 1088
+    const liquidity = BigInt(`0x${liquidityHex}`);
+    
+    // Extract fee tier (uint24 at offset 896)
+    const feeHex = data.slice(898, 962);
+    const feeTier = parseInt(feeHex, 16);
+    
+    // Extract tick range (int24 at offsets 960 and 1024)
+    const tickLowerHex = data.slice(962, 1026);
+    const tickUpperHex = data.slice(1026, 1090);
+    
+    // Convert to signed integers (int24)
+    let tickLower = parseInt(tickLowerHex, 16);
+    if (tickLower > 0x7FFFFF) tickLower -= 0x1000000; // Handle negative
+    
+    let tickUpper = parseInt(tickUpperHex, 16);
+    if (tickUpper > 0x7FFFFF) tickUpper -= 0x1000000; // Handle negative
+    
+    // Extract uncollected fees (uint128 at offsets 1280 and 1344)
+    const tokensOwed0Hex = data.slice(1282, 1346);
+    const tokensOwed1Hex = data.slice(1346, 1410);
+    const tokensOwed0 = BigInt(`0x${tokensOwed0Hex}`);
+    const tokensOwed1 = BigInt(`0x${tokensOwed1Hex}`);
+    
+    console.log(`✅ Extracted LP Position Data:`);
+    console.log(`  - Liquidity: ${liquidity.toString()}`);
+    console.log(`  - Fee Tier: ${feeTier / 10000}%`);
+    console.log(`  - Tick Range: [${tickLower}, ${tickUpper}]`);
+    console.log(`  - Uncollected Fees: ${tokensOwed0.toString()} / ${tokensOwed1.toString()}`);
+    
+    return {
+      liquidity,
+      feeTier,
+      tickLower,
+      tickUpper,
+      tokensOwed0,
+      tokensOwed1
+    };
+  } catch (err) {
+    console.error("LP position extraction error:", err.message);
+    return null;
+  }
+}
+
+// Extract token data from various lock events
 function extractTokenData(lockLog, eventName, source) {
   try {
     const topics = lockLog.topics || [];
@@ -60,6 +132,7 @@ function extractTokenData(lockLog, eventName, source) {
     
     console.log(`Extracting token - Event: ${eventName}, Source: ${source}`);
     
+    // Team Finance V3 Deposit (regular token locks)
     if (source === "Team Finance" && eventName === "Deposit") {
       const tokenAddress = topicsArray[1] ? `0x${topicsArray[1].slice(26)}` : null;
       if (data.length >= 194) {
@@ -67,11 +140,12 @@ function extractTokenData(lockLog, eventName, source) {
         const unlockHex = data.slice(130, 194);
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
-        return { tokenAddress, amount, unlockTime, version: "V3" };
+        return { tokenAddress, amount, unlockTime, version: "V3", isLPLock: false, lpPosition: null };
       }
-      return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
+      return { tokenAddress, amount: null, unlockTime: null, version: "V3", isLPLock: false, lpPosition: null };
     }
     
+    // UNCX V2 onDeposit (older format)
     if (eventName === "onDeposit") {
       if (data.length >= 322) {
         const tokenAddress = `0x${data.slice(26, 66)}`;
@@ -79,11 +153,12 @@ function extractTokenData(lockLog, eventName, source) {
         const unlockHex = data.slice(258, 322);
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
-        return { tokenAddress, amount, unlockTime, version: "V2" };
+        return { tokenAddress, amount, unlockTime, version: "V2", isLPLock: false, lpPosition: null };
       }
-      return { tokenAddress: null, amount: null, unlockTime: null, version: "V2" };
+      return { tokenAddress: null, amount: null, unlockTime: null, version: "V2", isLPLock: false, lpPosition: null };
     }
     
+    // Team Finance V3 DepositNFT (NFT position locks)
     if (source === "Team Finance" && eventName === "DepositNFT") {
       const tokenAddress = topicsArray[1] ? `0x${topicsArray[1].slice(26)}` : null;
       if (data.length >= 258) {
@@ -91,11 +166,12 @@ function extractTokenData(lockLog, eventName, source) {
         const unlockHex = data.slice(194, 258);
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
-        return { tokenAddress, amount, unlockTime, version: "V3" };
+        return { tokenAddress, amount, unlockTime, version: "V3", isLPLock: false, lpPosition: null };
       }
-      return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
+      return { tokenAddress, amount: null, unlockTime: null, version: "V3", isLPLock: false, lpPosition: null };
     }
     
+    // Generic DepositNFT
     if (eventName === "DepositNFT") {
       const tokenAddress = topicsArray[2] ? `0x${topicsArray[2].slice(26)}` : null;
       if (data.length >= 130) {
@@ -103,57 +179,44 @@ function extractTokenData(lockLog, eventName, source) {
         const unlockHex = data.slice(66, 130);
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
-        return { tokenAddress, amount, unlockTime, version: "V3" };
+        return { tokenAddress, amount, unlockTime, version: "V3", isLPLock: false, lpPosition: null };
       }
-      return { tokenAddress, amount: null, unlockTime: null, version: "V3" };
+      return { tokenAddress, amount: null, unlockTime: null, version: "V3", isLPLock: false, lpPosition: null };
     }
     
+    // UNCX V3 onLock (LP position locks - MOST COMMON)
     if (eventName === "onLock" && source === "UNCX") {
-      // UNCX V3 LP lock - data structure:
-      // Offset 0-63: lock_id
-      // Offset 64-127: nftPositionManager
-      // Offset 128-191: nft_id
-      // Offset 192-255: owner
-      // Offset 256-319: additionalCollector
-      // Offset 320-383: collectAddress
-      // Offset 384-447: unlockDate ← THIS IS WHAT WE NEED
-      // Offset 448-511: countryCode
-      // Offset 512-575: collectFee
-      // Offset 576-639: poolAddress
-      // Offset 640+: position tuple
-      //   - Offset 768-831: token0 ← THIS IS WHAT WE NEED
-      //   - Offset 832-895: token1 ← THIS IS WHAT WE NEED
-      
       if (data.length >= 896) {
-        // Extract unlock time (offset 384, length 64 chars)
-        const unlockHex = data.slice(386, 450); // 386 = 2 (for 0x) + 384
+        // Extract unlock time (offset 384)
+        const unlockHex = data.slice(386, 450);
         const unlockTime = parseInt(unlockHex, 16);
         
-        // Extract token0 (offset 768, last 40 chars of 64-char word)
-        const token0 = `0x${data.slice(794, 834)}`; // 794 = 2 + 768 + 24
+        // Extract token0 and token1 (offsets 768, 832)
+        const token0 = `0x${data.slice(794, 834)}`;
+        const token1 = `0x${data.slice(858, 898)}`;
         
-        // Extract token1 (offset 832, last 40 chars of 64-char word)  
-        const token1 = `0x${data.slice(858, 898)}`; // 858 = 2 + 832 + 24
+        // Extract FULL LP position data
+        const lpPosition = extractLPPositionData(lockLog);
         
         console.log(`UNCX LP Lock: token0=${token0}, token1=${token1}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
         
-        // Return token0 as the primary token
         return { 
           tokenAddress: token0, 
           token1: token1,
-          amount: null, // LP positions don't have a single "amount"
+          amount: null,
           unlockTime, 
           version: "UNCX V3",
-          isLPLock: true
+          isLPLock: true,
+          lpPosition
         };
       }
-      return { tokenAddress: null, amount: null, unlockTime: null, version: "UNCX V3" };
+      return { tokenAddress: null, amount: null, unlockTime: null, version: "UNCX V3", isLPLock: true, lpPosition: null };
     }
     
-    return { tokenAddress: null, amount: null, unlockTime: null, version: "Unknown" };
+    return { tokenAddress: null, amount: null, unlockTime: null, version: "Unknown", isLPLock: false, lpPosition: null };
   } catch (err) {
     console.error("Token extraction error:", err.message);
-    return { tokenAddress: null, amount: null, unlockTime: null, version: "Unknown" };
+    return { tokenAddress: null, amount: null, unlockTime: null, version: "Unknown", isLPLock: false, lpPosition: null };
   }
 }
 
@@ -169,9 +232,8 @@ async function getTokenInfo(tokenAddress, chainId) {
     return null;
   }
   
-  console.log(`Trying ${rpcUrls.length} RPCs in parallel for faster response...`);
+  console.log(`Trying ${rpcUrls.length} RPCs in parallel...`);
   
-  // Try ALL RPCs in parallel, use first successful response
   const attempts = rpcUrls.map(async (rpcUrl) => {
     try {
       const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
@@ -197,11 +259,10 @@ async function getTokenInfo(tokenAddress, chainId) {
       };
     } catch (err) {
       console.error(`❌ RPC ${rpcUrl} failed:`, err.message);
-      throw err; // Reject this promise so Promise.any ignores it
+      throw err;
     }
   });
   
-  // Return first successful result
   try {
     const result = await Promise.any(attempts);
     console.log(`✅ Got token info from: ${result.rpcUsed}`);
@@ -212,7 +273,6 @@ async function getTokenInfo(tokenAddress, chainId) {
   }
 }
 
-// Fetch BNB/ETH price for native token display
 async function getNativeTokenPrice(chainId) {
   try {
     const nativeTokens = {
@@ -237,90 +297,81 @@ async function getNativeTokenPrice(chainId) {
   }
 }
 
-// FIXED: Actually fetch data from DexScreener
-async function enrichTokenData(tokenAddress, chainId) {
+// ONLY fetch price from APIs - everything else comes from lock data
+async function getTokenPrice(tokenAddress, chainId) {
   try {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId];
     
-    console.log(`Starting enrichment for ${tokenAddress} on ${chainName}`);
+    console.log(`Fetching price for ${tokenAddress} on ${chainName}`);
     
-    // Fetch from DexScreener
-    const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
-    const response = await axios.get(url, { timeout: 10000 });
-    
-    if (!response.data?.pairs || response.data.pairs.length === 0) {
-      console.log(`No pairs found on DexScreener for ${tokenAddress}`);
-      return {
-        price: null,
-        marketCap: null,
-        liquidity: null,
-        pairCreatedAt: null,
-        securityFlags: {}
-      };
-    }
-    
-    // Filter pairs for the correct chain
-    const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
-    
-    if (chainPairs.length === 0) {
-      console.log(`No pairs found for ${tokenAddress} on ${chainName}`);
-      return {
-        price: null,
-        marketCap: null,
-        liquidity: null,
-        pairCreatedAt: null,
-        securityFlags: {}
-      };
-    }
-    
-    // Sort by liquidity and take the best pair
-    const bestPair = chainPairs.sort((a, b) => 
-      (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
-    )[0];
-    
-    console.log(`Found best pair: liquidity=$${bestPair.liquidity?.usd}, price=$${bestPair.priceUsd}`);
-    
-    // Try to get security info from GoPlus (optional - don't fail if it errors)
-    let securityFlags = {};
+    // TRY 1: DexScreener (faster, more reliable)
     try {
-      const secUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${tokenAddress}`;
-      const secResponse = await axios.get(secUrl, { timeout: 5000 });
+      console.log(`Trying DexScreener API...`);
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
+      const response = await axios.get(url, { timeout: 10000 });
       
-      const secData = secResponse.data?.result?.[tokenAddress.toLowerCase()];
-      if (secData) {
-        securityFlags = {
-          isOpenSource: secData.is_open_source === "1",
-          isHoneypot: secData.is_honeypot === "1",
-          canTakeBackOwnership: secData.can_take_back_ownership === "1",
-          ownerBalance: parseFloat(secData.owner_percent || 0) * 100,
-          holderCount: parseInt(secData.holder_count || 0),
-          topHolderPercent: parseFloat(secData.holder_top10_percent || 0) * 100,
-          lpHolderCount: parseInt(secData.lp_holder_count || 0)
-        };
-        console.log(`Security data fetched: honeypot=${securityFlags.isHoneypot}, verified=${securityFlags.isOpenSource}`);
+      if (response.data?.pairs && response.data.pairs.length > 0) {
+        const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
+        
+        if (chainPairs.length > 0) {
+          const bestPair = chainPairs.sort((a, b) => 
+            (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
+          )[0];
+          
+          if (bestPair.priceUsd) {
+            console.log(`✅ DexScreener price: $${bestPair.priceUsd}`);
+            return {
+              price: parseFloat(bestPair.priceUsd),
+              source: 'DexScreener'
+            };
+          }
+        }
       }
-    } catch (secErr) {
-      console.log(`Could not fetch security data: ${secErr.message}`);
+      
+      console.log(`DexScreener: No price data for ${chainName}`);
+    } catch (err) {
+      console.log(`DexScreener failed: ${err.message}`);
     }
     
-    return {
-      price: bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : null,
-      marketCap: bestPair.marketCap || null,
-      liquidity: bestPair.liquidity?.usd || null,
-      pairCreatedAt: bestPair.pairCreatedAt || null,
-      securityFlags
-    };
+    // TRY 2: DexTools (fallback)
+    try {
+      console.log(`Trying DexTools API...`);
+      const url = `https://www.dextools.io/shared/search/pair?query=${tokenAddress}`;
+      const response = await axios.get(url, { 
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      
+      if (response.data?.results && response.data.results.length > 0) {
+        const chainPairs = response.data.results.filter(r => {
+          const pairChain = r.id.chain?.toLowerCase();
+          return pairChain === chainName || 
+                 (chainName === 'bsc' && pairChain === 'bnb') ||
+                 (chainName === 'polygon' && pairChain === 'matic');
+        });
+        
+        if (chainPairs.length > 0 && chainPairs[0].price) {
+          console.log(`✅ DexTools price: $${chainPairs[0].price}`);
+          return {
+            price: chainPairs[0].price,
+            source: 'DexTools'
+          };
+        }
+      }
+      
+      console.log(`DexTools: No price data for ${chainName}`);
+    } catch (err) {
+      console.log(`DexTools failed: ${err.message}`);
+    }
+    
+    // Both failed
+    console.log(`❌ Could not fetch price from any source`);
+    return { price: null, source: null };
     
   } catch (err) {
-    console.error("Enrichment error:", err.message);
-    return {
-      price: null,
-      marketCap: null,
-      liquidity: null,
-      pairCreatedAt: null,
-      securityFlags: {}
-    };
+    console.error("Price fetch error:", err.message);
+    return { price: null, source: null };
   }
 }
 
@@ -344,26 +395,6 @@ function formatUnlockDate(unlockTime) {
   const month = date.toLocaleString('en-US', { month: 'short' });
   const year = date.getFullYear();
   return `${month} ${year}`;
-}
-
-function formatContractAge(pairCreatedAt) {
-  if (!pairCreatedAt) return null;
-  
-  try {
-    const created = new Date(pairCreatedAt);
-    const now = new Date();
-    const diffMs = now - created;
-    const diffSecs = Math.floor(diffMs / 1000);
-    
-    if (diffSecs < 60) return `${diffSecs} seconds old`;
-    if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)} minutes old`;
-    if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)} hours old`;
-    if (diffSecs < 2592000) return `${Math.floor(diffSecs / 86400)} days old`;
-    if (diffSecs < 31536000) return `${Math.floor(diffSecs / 2592000)} months old`;
-    return `${Math.floor(diffSecs / 31536000)} years old`;
-  } catch (err) {
-    return null;
-  }
 }
 
 function getBuyLink(tokenAddress, chainId) {
@@ -396,13 +427,12 @@ async function editTelegramMessage(messageId, text) {
 
 // Cache to prevent duplicate enrichment requests
 const enrichmentCache = new Map();
-const CACHE_TTL = 60000; // 1 minute
+const CACHE_TTL = 60000;
 
 module.exports = async (req, res) => {
   try {
     console.log("🔄 Enrichment endpoint called");
     console.log("Method:", req.method);
-    console.log("Body keys:", Object.keys(req.body || {}));
     
     if (req.method === "GET") {
       return res.status(200).json({ status: "ready" });
@@ -418,33 +448,27 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
     
-    // Check for duplicate enrichment request
+    // Check for duplicate
     if (txHash && enrichmentCache.has(txHash)) {
-      const cachedTime = enrichmentCache.get(txHash);
-      const timeSince = Date.now() - cachedTime;
-      
+      const timeSince = Date.now() - enrichmentCache.get(txHash);
       if (timeSince < CACHE_TTL) {
-        console.log(`⚠️ Duplicate enrichment request for ${txHash} (${Math.floor(timeSince / 1000)}s ago)`);
+        console.log(`⚠️ Duplicate request for ${txHash}`);
         return res.status(200).json({ status: "skipped", reason: "duplicate" });
       }
     }
     
-    // Mark this txHash as being processed
     if (txHash) {
       enrichmentCache.set(txHash, Date.now());
       
-      // Clean up old entries periodically
       if (enrichmentCache.size > 100) {
         const now = Date.now();
         for (const [key, timestamp] of enrichmentCache.entries()) {
-          if (now - timestamp > CACHE_TTL) {
-            enrichmentCache.delete(key);
-          }
+          if (now - timestamp > CACHE_TTL) enrichmentCache.delete(key);
         }
       }
     }
     
-    // Extract token data
+    // Extract ALL data from lock event
     const tokenData = extractTokenData(lockLog, eventName, source);
     console.log("Token extraction result:", JSON.stringify(tokenData, (key, value) =>
       typeof value === 'bigint' ? value.toString() : value
@@ -456,7 +480,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ status: "failed", reason: "no_token_address" });
     }
     
-    // Get token info
+    // Get token info from blockchain
     const tokenInfo = await getTokenInfo(tokenData.tokenAddress, chainId);
     
     if (!tokenInfo) {
@@ -465,38 +489,34 @@ module.exports = async (req, res) => {
       return res.status(200).json({ status: "failed", reason: "rpc_failed" });
     }
     
-    console.log(`Token info fetched: ${tokenInfo.symbol}`);
+    console.log(`Token info: ${tokenInfo.symbol}`);
     
     // Calculate amounts
     const amount = tokenData.amount ? Number(tokenData.amount) / Math.pow(10, tokenInfo.decimals) : null;
     const duration = formatDuration(tokenData.unlockTime);
     const unlockDate = formatUnlockDate(tokenData.unlockTime);
     
-    // Enrich with price/security
-    const enriched = await enrichTokenData(tokenData.tokenAddress, chainId);
+    // ONLY fetch price from APIs (everything else is from lock data)
+    const priceData = await getTokenPrice(tokenData.tokenAddress, chainId);
+    console.log(`Price: ${priceData.price}, Source: ${priceData.source}`);
     
-    console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}`);
+    // Calculate USD value if we have price and amount
+    const usdValue = amount && priceData.price 
+      ? (amount * priceData.price).toFixed(2)
+      : null;
     
-    // Get native token price for display (optional - don't fail if it errors)
-    let nativePrice = null;
-    try {
-      nativePrice = await getNativeTokenPrice(chainId);
-      console.log(`Native token price: ${nativePrice}`);
-    } catch (err) {
-      console.error("Failed to get native token price:", err.message);
-    }
-    
-    const nativeSymbols = { 1: 'ETH', 56: 'BNB', 137: 'MATIC', 8453: 'ETH' };
-    const nativeSymbol = nativeSymbols[chainId] || 'ETH';
-    
-    // Calculate percentages
+    // Calculate locked percentage
     const lockedPercent = amount && tokenInfo.totalSupply 
       ? ((amount / (Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals))) * 100).toFixed(2)
       : null;
     
-    const usdValue = amount && enriched.price 
-      ? (amount * enriched.price).toFixed(2)
-      : null;
+    // Get native token price for reference
+    let nativePrice = null;
+    try {
+      nativePrice = await getNativeTokenPrice(chainId);
+    } catch (err) {
+      console.error("Failed to get native token price:", err.message);
+    }
     
     // Build message
     const parts = ["🔒 **New lock detected**", ""];
@@ -505,35 +525,46 @@ module.exports = async (req, res) => {
     parts.push(`Token: $${tokenInfo.symbol}`);
     parts.push(`Address: \`${tokenData.tokenAddress.slice(0, 8)}...${tokenData.tokenAddress.slice(-6)}\``);
     
-    if (enriched.price) {
-      const priceStr = enriched.price < 0.01 
-        ? enriched.price.toExponential(2) 
-        : enriched.price.toFixed(6);
+    if (priceData.price) {
+      const priceStr = priceData.price < 0.01 
+        ? priceData.price.toExponential(2) 
+        : priceData.price.toFixed(6);
       parts.push(`Price: $${priceStr}`);
     }
     
-    if (enriched.marketCap) {
-      const mcStr = enriched.marketCap >= 1000000 
-        ? `$${(enriched.marketCap / 1000000).toFixed(2)}M`
-        : `$${(enriched.marketCap / 1000).toFixed(1)}K`;
-      parts.push(`MC: ${mcStr}`);
+    // For LP locks, show the LP position data we extracted
+    if (tokenData.isLPLock && tokenData.lpPosition) {
+      parts.push("");
+      parts.push("💧 **LP POSITION DATA**");
+      
+      // Show liquidity amount
+      const liquidityFormatted = (Number(tokenData.lpPosition.liquidity) / 1e18).toFixed(4);
+      parts.push(`Liquidity: ${liquidityFormatted} LP tokens`);
+      
+      // Show fee tier
+      const feePercent = tokenData.lpPosition.feeTier / 10000;
+      parts.push(`Fee Tier: ${feePercent}%`);
+      
+      // Show tick range
+      parts.push(`Price Range: [${tokenData.lpPosition.tickLower}, ${tokenData.lpPosition.tickUpper}]`);
+      
+      // Show uncollected fees if any
+      const fees0 = Number(tokenData.lpPosition.tokensOwed0);
+      const fees1 = Number(tokenData.lpPosition.tokensOwed1);
+      if (fees0 > 0 || fees1 > 0) {
+        parts.push(`Uncollected Fees: ${(fees0 / 1e18).toFixed(6)} / ${(fees1 / 1e18).toFixed(6)}`);
+      }
+      
+      // Show token1 info
+      if (tokenData.token1) {
+        parts.push(`Paired with: \`${tokenData.token1.slice(0, 8)}...${tokenData.token1.slice(-6)}\``);
+      }
     }
     
-    if (enriched.liquidity) {
-      const liqStr = enriched.liquidity >= 1000000
-        ? `$${(enriched.liquidity / 1000000).toFixed(2)}M`
-        : `$${(enriched.liquidity / 1000).toFixed(1)}K`;
-      parts.push(`Liquidity: ${liqStr}`);
-    }
-    
-    const contractAge = formatContractAge(enriched.pairCreatedAt);
-    if (contractAge) {
-      parts.push(`Age: ${contractAge}`);
-    }
-    
-    // Add holder count in TOKEN INFO section
-    if (enriched.securityFlags.holderCount) {
-      parts.push(`Holders: ${enriched.securityFlags.holderCount.toLocaleString()}`);
+    // Show "no price data" message only if we couldn't get price
+    if (!priceData.price) {
+      parts.push("");
+      parts.push("⚠️ _Price unavailable from DexScreener or DexTools_");
     }
     
     parts.push("");
@@ -574,48 +605,6 @@ module.exports = async (req, res) => {
     }
     
     parts.push("");
-    
-    // QUICK CHECK section (security flags) - moved here after LINKS
-    const hasSecurityInfo = enriched.securityFlags && Object.keys(enriched.securityFlags).length > 0;
-    
-    if (hasSecurityInfo) {
-      parts.push("⚡ **QUICK CHECK**");
-      
-      if (enriched.securityFlags.isOpenSource === true) {
-        parts.push("✅ Verified contract");
-      } else if (enriched.securityFlags.isOpenSource === false) {
-        parts.push("⚠️ Not verified");
-      }
-      
-      if (enriched.securityFlags.isHoneypot === false) {
-        parts.push("✅ Not honeypot");
-      } else if (enriched.securityFlags.isHoneypot === true) {
-        parts.push("🔴 Honeypot detected!");
-      }
-      
-      if (enriched.securityFlags.canTakeBackOwnership === true) {
-        parts.push("⚠️ Can take back ownership");
-      }
-      
-      if (enriched.securityFlags.ownerBalance > 50) {
-        parts.push(`🔴 Owner holds ${enriched.securityFlags.ownerBalance.toFixed(1)}%`);
-      } else if (enriched.securityFlags.ownerBalance > 20) {
-        parts.push(`⚠️ Owner holds ${enriched.securityFlags.ownerBalance.toFixed(1)}%`);
-      }
-      
-      if (enriched.securityFlags.topHolderPercent > 70) {
-        parts.push(`🔴 Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
-      } else if (enriched.securityFlags.topHolderPercent > 50) {
-        parts.push(`⚠️ Top 10 holders: ${enriched.securityFlags.topHolderPercent.toFixed(1)}%`);
-      }
-      
-      if (enriched.securityFlags.lpHolderCount > 0) {
-        parts.push(`💧 LP: ${enriched.securityFlags.lpHolderCount} holders`);
-      }
-      
-      parts.push("");
-    }
-    
     parts.push(`[View Transaction](${explorerLink})`);
     
     const enrichedMessage = parts.join("\n");
