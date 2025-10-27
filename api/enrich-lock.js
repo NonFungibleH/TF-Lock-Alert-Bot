@@ -217,9 +217,9 @@ async function getTokenInfo(tokenAddress, chainId) {
       );
       
       const [symbol, decimals, totalSupply] = await Promise.all([
-        Promise.race([contract.symbol(), timeout(5000)]),
-        Promise.race([contract.decimals(), timeout(5000)]),
-        Promise.race([contract.totalSupply(), timeout(5000)])
+        Promise.race([contract.symbol(), timeout(3000)]),
+        Promise.race([contract.decimals(), timeout(3000)]),
+        Promise.race([contract.totalSupply(), timeout(3000)])
       ]);
       
       console.log(`✅ Token info from ${rpcUrl}: ${symbol}, decimals: ${decimals}`);
@@ -410,7 +410,7 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
     try {
       console.log(`Trying DexScreener API...`);
       const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
-      const response = await axios.get(url, { timeout: 10000 });
+      const response = await axios.get(url, { timeout: 7000 });
       
       if (response.data?.pairs && response.data.pairs.length > 0) {
         const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
@@ -426,7 +426,7 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
           let securityData = {};
           try {
             const secUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${tokenAddress}`;
-            const secResponse = await axios.get(secUrl, { timeout: 5000 });
+            const secResponse = await axios.get(secUrl, { timeout: 3000 });
             const secResult = secResponse.data?.result?.[tokenAddress.toLowerCase()];
             
             if (secResult) {
@@ -466,7 +466,7 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
       console.log(`Trying DexTools API...`);
       const url = `https://www.dextools.io/shared/search/pair?query=${tokenAddress}`;
       const response = await axios.get(url, { 
-        timeout: 10000,
+        timeout: 7000,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       });
       
