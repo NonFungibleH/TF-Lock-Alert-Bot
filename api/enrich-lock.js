@@ -227,17 +227,17 @@ async function getNativeTokenPrice(chainId) {
     
     const response = await axios.get(
       `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=usd`,
-      { timeout: 3000 }
+      { timeout: 5000 }
     );
     
     return response.data[tokenId]?.usd || null;
   } catch (err) {
-    console.error("Failed to fetch native token price:", err.message);
+    console.error("Error fetching native token price:", err.message);
     return null;
   }
 }
 
-// Enrichment function - fetches price, liquidity, security data
+// FIXED: Actually fetch data from DexScreener
 async function enrichTokenData(tokenAddress, chainId) {
   try {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
@@ -245,18 +245,75 @@ async function enrichTokenData(tokenAddress, chainId) {
     
     console.log(`Starting enrichment for ${tokenAddress} on ${chainName}`);
     
-    // Return empty enrichment data for now
-    // TODO: Add actual API calls to fetch price, liquidity, and security data
+    // Fetch from DexScreener
+    const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
+    const response = await axios.get(url, { timeout: 10000 });
+    
+    if (!response.data?.pairs || response.data.pairs.length === 0) {
+      console.log(`No pairs found on DexScreener for ${tokenAddress}`);
+      return {
+        price: null,
+        marketCap: null,
+        liquidity: null,
+        pairCreatedAt: null,
+        securityFlags: {}
+      };
+    }
+    
+    // Filter pairs for the correct chain
+    const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
+    
+    if (chainPairs.length === 0) {
+      console.log(`No pairs found for ${tokenAddress} on ${chainName}`);
+      return {
+        price: null,
+        marketCap: null,
+        liquidity: null,
+        pairCreatedAt: null,
+        securityFlags: {}
+      };
+    }
+    
+    // Sort by liquidity and take the best pair
+    const bestPair = chainPairs.sort((a, b) => 
+      (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
+    )[0];
+    
+    console.log(`Found best pair: liquidity=$${bestPair.liquidity?.usd}, price=$${bestPair.priceUsd}`);
+    
+    // Try to get security info from GoPlus (optional - don't fail if it errors)
+    let securityFlags = {};
+    try {
+      const secUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${tokenAddress}`;
+      const secResponse = await axios.get(secUrl, { timeout: 5000 });
+      
+      const secData = secResponse.data?.result?.[tokenAddress.toLowerCase()];
+      if (secData) {
+        securityFlags = {
+          isOpenSource: secData.is_open_source === "1",
+          isHoneypot: secData.is_honeypot === "1",
+          canTakeBackOwnership: secData.can_take_back_ownership === "1",
+          ownerBalance: parseFloat(secData.owner_percent || 0) * 100,
+          holderCount: parseInt(secData.holder_count || 0),
+          topHolderPercent: parseFloat(secData.holder_top10_percent || 0) * 100,
+          lpHolderCount: parseInt(secData.lp_holder_count || 0)
+        };
+        console.log(`Security data fetched: honeypot=${securityFlags.isHoneypot}, verified=${securityFlags.isOpenSource}`);
+      }
+    } catch (secErr) {
+      console.log(`Could not fetch security data: ${secErr.message}`);
+    }
+    
     return {
-      price: null,
-      marketCap: null,
-      liquidity: null,
-      pairCreatedAt: null,
-      securityFlags: {}
+      price: bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : null,
+      marketCap: bestPair.marketCap || null,
+      liquidity: bestPair.liquidity?.usd || null,
+      pairCreatedAt: bestPair.pairCreatedAt || null,
+      securityFlags
     };
     
   } catch (err) {
-    console.error("Enrichment error:", err);
+    console.error("Enrichment error:", err.message);
     return {
       price: null,
       marketCap: null,
@@ -284,59 +341,76 @@ function formatDuration(unlockTime) {
 function formatUnlockDate(unlockTime) {
   if (!unlockTime) return "Unknown";
   const date = new Date(unlockTime * 1000);
-  return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  const month = date.toLocaleString('en-US', { month: 'short' });
+  const year = date.getFullYear();
+  return `${month} ${year}`;
 }
 
 function formatContractAge(pairCreatedAt) {
   if (!pairCreatedAt) return null;
   
-  const created = new Date(pairCreatedAt).getTime();
-  const now = Date.now();
-  const diffMs = now - created;
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  
-  if (diffDays < 1) return "< 1 day old";
-  if (diffDays === 1) return "1 day old";
-  if (diffDays < 7) return `${diffDays} days old`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks old`;
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)} months old`;
-  return `${Math.floor(diffDays / 365)} years old`;
+  try {
+    const created = new Date(pairCreatedAt);
+    const now = new Date();
+    const diffMs = now - created;
+    const diffSecs = Math.floor(diffMs / 1000);
+    
+    if (diffSecs < 60) return `${diffSecs} seconds old`;
+    if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)} minutes old`;
+    if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)} hours old`;
+    if (diffSecs < 2592000) return `${Math.floor(diffSecs / 86400)} days old`;
+    if (diffSecs < 31536000) return `${Math.floor(diffSecs / 2592000)} months old`;
+    return `${Math.floor(diffSecs / 31536000)} years old`;
+  } catch (err) {
+    return null;
+  }
 }
 
 function getBuyLink(tokenAddress, chainId) {
   const links = {
-    1: `https://app.uniswap.org/#/swap?outputCurrency=${tokenAddress}`,
-    56: `https://pancakeswap.finance/swap?outputCurrency=${tokenAddress}`,
-    137: `https://quickswap.exchange/#/swap?outputCurrency=${tokenAddress}`,
-    8453: `https://app.uniswap.org/#/swap?outputCurrency=${tokenAddress}&chain=base`
+    1: `https://app.uniswap.org/swap?outputCurrency=${tokenAddress}&chain=ethereum`,
+    56: `https://pancakeswap.finance/swap?outputCurrency=${tokenAddress}&chain=bsc`,
+    137: `https://app.uniswap.org/swap?outputCurrency=${tokenAddress}&chain=polygon`,
+    8453: `https://app.uniswap.org/swap?outputCurrency=${tokenAddress}&chain=base`
   };
   return links[chainId] || null;
 }
 
 async function editTelegramMessage(messageId, text) {
-  await axios.post(
-    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`,
-    {
-      chat_id: TELEGRAM_GROUP_CHAT_ID,
-      message_id: messageId,
-      text,
-      parse_mode: "Markdown",
-      disable_web_page_preview: true
-    }
-  );
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`,
+      {
+        chat_id: TELEGRAM_GROUP_CHAT_ID,
+        message_id: messageId,
+        text,
+        parse_mode: "Markdown",
+        disable_web_page_preview: true
+      }
+    );
+  } catch (err) {
+    console.error("Failed to edit Telegram message:", err.message);
+    throw err;
+  }
 }
 
-// In-memory cache to prevent duplicate enrichments
+// Cache to prevent duplicate enrichment requests
 const enrichmentCache = new Map();
-const CACHE_TTL = 600000; // 10 minutes
+const CACHE_TTL = 60000; // 1 minute
 
 module.exports = async (req, res) => {
-  const startTime = Date.now();
-  
   try {
     console.log("🔄 Enrichment endpoint called");
     console.log("Method:", req.method);
     console.log("Body keys:", Object.keys(req.body || {}));
+    
+    if (req.method === "GET") {
+      return res.status(200).json({ status: "ready" });
+    }
+    
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
     
     const { messageId, txHash, chainId, lockLog, eventName, source, explorerLink, chain } = req.body;
     
@@ -447,8 +521,8 @@ module.exports = async (req, res) => {
     
     if (enriched.liquidity) {
       const liqStr = enriched.liquidity >= 1000000
-        ? `${(enriched.liquidity / 1000000).toFixed(2)}M`
-        : `${(enriched.liquidity / 1000).toFixed(1)}K`;
+        ? `$${(enriched.liquidity / 1000000).toFixed(2)}M`
+        : `$${(enriched.liquidity / 1000).toFixed(1)}K`;
       parts.push(`Liquidity: ${liqStr}`);
     }
     
@@ -475,7 +549,7 @@ module.exports = async (req, res) => {
     }
     
     if (usdValue) {
-      parts.push(`Value: ${Number(usdValue).toLocaleString()}`);
+      parts.push(`Value: $${Number(usdValue).toLocaleString()}`);
     }
     
     if (lockedPercent) {
@@ -492,9 +566,7 @@ module.exports = async (req, res) => {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId] || "ethereum";
     
-    parts.push(`[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress})`);
-    parts.push(`[DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress})`);
-    parts.push(`[TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
+    parts.push(`[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress}) | [DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress}) | [TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
     
     const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
     if (buyLink) {
