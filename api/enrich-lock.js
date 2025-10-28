@@ -487,6 +487,16 @@ function getBuyLink(tokenAddress, chainId) {
   return links[chainId] || null;
 }
 
+function getDexInfo(chainId) {
+  const dexInfo = {
+    1: { name: "Uniswap", url: "https://app.uniswap.org" },
+    56: { name: "PancakeSwap", url: "https://pancakeswap.finance" },
+    137: { name: "QuickSwap", url: "https://quickswap.exchange" },
+    8453: { name: "Uniswap", url: "https://app.uniswap.org" }
+  };
+  return dexInfo[chainId] || null;
+}
+
 async function editTelegramMessage(messageId, text) {
   await axios.post(
     `https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`,
@@ -631,7 +641,7 @@ module.exports = async (req, res) => {
       parts.push(`Pair: ${tokenInfo.symbol}/[paired token]`);
     }
     
-    parts.push(`Address: \`${tokenData.tokenAddress.slice(0, 10)}...${tokenData.tokenAddress.slice(-6)}\``);
+    parts.push(`Address: \`${tokenData.tokenAddress.slice(0, 6)}...${tokenData.tokenAddress.slice(-4)}\``);
     
     if (enriched.price) {
       const priceStr = enriched.price < 0.01 
@@ -678,7 +688,7 @@ module.exports = async (req, res) => {
     }
     
     if (usdValue) {
-      parts.push(`Value: ${Number(usdValue).toLocaleString()}`);
+      parts.push(`Value: $${Number(usdValue).toLocaleString()}`);
     }
     
     if (lockedPercent) {
@@ -726,7 +736,10 @@ module.exports = async (req, res) => {
     parts.push("");
     
     const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
-    if (buyLink) {
+    const dexInfo = getDexInfo(chainId);
+    if (buyLink && dexInfo) {
+      parts.push(`[🛒 Buy on ${dexInfo.name}](${buyLink})`);
+    } else if (buyLink) {
       parts.push(`[🛒 Buy Now](${buyLink})`);
     }
     
