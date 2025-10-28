@@ -341,6 +341,27 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
           
           console.log(`✅ DexScreener: price=$${bestPair.priceUsd}, liq=$${bestPair.liquidity?.usd}`);
           
+          // Check if quote token is the native/wrapped native token
+          const nativeTokenAddresses = {
+            1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
+            56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
+            137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC
+            8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
+          };
+          
+          const quoteTokenAddress = bestPair.quoteToken?.address?.toLowerCase();
+          const nativeAddress = nativeTokenAddresses[chainId]?.toLowerCase();
+          const isNativePair = quoteTokenAddress === nativeAddress;
+          
+          // If quote token is native token, use liquidity.quote, otherwise null
+          const nativeTokenAmount = isNativePair && bestPair.liquidity?.quote 
+            ? parseFloat(bestPair.liquidity.quote) 
+            : null;
+          
+          if (nativeTokenAmount) {
+            console.log(`✅ Native token in pair: ${nativeTokenAmount} ${bestPair.quoteToken?.symbol}`);
+          }
+          
           // Try to get security/holder data from GoPlus
           let securityData = {};
           try {
@@ -367,8 +388,10 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
             price: bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : null,
             marketCap: bestPair.marketCap || null,
             liquidity: bestPair.liquidity?.usd || null,
+            nativeTokenAmount: nativeTokenAmount,  // NEW: Amount of native token in pair
             pairName: `${bestPair.baseToken?.symbol || ''}/${bestPair.quoteToken?.symbol || ''}`,
             pairAddress: bestPair.pairAddress || null,
+            pairCreatedAt: bestPair.pairCreatedAt || null,
             securityData,
             source: 'DexScreener'
           };
@@ -405,7 +428,10 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
             price: bestPair.price || null,
             marketCap: bestPair.metrics?.marketCap || null,
             liquidity: bestPair.metrics?.liquidity || null,
+            nativeTokenAmount: null,  // DexTools doesn't provide this easily
             pairName: bestPair.name || null,
+            pairAddress: null,
+            pairCreatedAt: null,
             securityData: {},
             source: 'DexTools'
           };
@@ -423,7 +449,10 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
       price: null,
       marketCap: null,
       liquidity: null,
+      nativeTokenAmount: null,
       pairName: null,
+      pairAddress: null,
+      pairCreatedAt: null,
       securityData: {},
       source: null
     };
@@ -434,7 +463,10 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
       price: null,
       marketCap: null,
       liquidity: null,
+      nativeTokenAmount: null,
       pairName: null,
+      pairAddress: null,
+      pairCreatedAt: null,
       securityData: {},
       source: null
     };
@@ -668,6 +700,12 @@ module.exports = async (req, res) => {
       parts.push(`Liquidity: ${liqStr}`);
     }
     
+    // Show pair age (good proxy for token age)
+    const pairAge = formatContractAge(enriched.pairCreatedAt);
+    if (pairAge) {
+      parts.push(`Pair Age: ${pairAge}`);
+    }
+    
     if (enriched.securityData?.holderCount) {
       parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
     }
@@ -689,6 +727,20 @@ module.exports = async (req, res) => {
     
     if (usdValue) {
       parts.push(`Value: $${Number(usdValue).toLocaleString()}`);
+    }
+    
+    // Show native token value if available
+    if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0) {
+      const nativeStr = enriched.nativeTokenAmount >= 1 
+        ? enriched.nativeTokenAmount.toFixed(2)
+        : enriched.nativeTokenAmount.toFixed(4);
+      parts.push(`Native: ${nativeStr} ${nativeSymbol}`);
+      
+      // Show USD value of native token if we have the price
+      if (nativePrice) {
+        const nativeUsdValue = (enriched.nativeTokenAmount * nativePrice).toFixed(2);
+        parts.push(`Native USD: $${Number(nativeUsdValue).toLocaleString()}`);
+      }
     }
     
     if (lockedPercent) {
