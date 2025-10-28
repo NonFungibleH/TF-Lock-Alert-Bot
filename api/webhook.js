@@ -156,51 +156,58 @@ module.exports = async (req, res) => {
     const messageId = await sendTelegramMessage(basicMessage);
     console.log(`✅ Basic Telegram message sent (ID: ${messageId})`);
     
-    // Respond to webhook immediately
-    res.status(200).json({ 
-      status: "sent",
-      dbSaved,
-      txHash,
-      messageId
-    });
-    
     // PART 3: Trigger enrichment via separate endpoint
     // Build enrichment URL - use production domain
+    const enrichmentPayload = {
+      messageId,
+      txHash,
+      chainId,
+      lockLog,
+      eventName,
+      source,
+      explorerLink,
+      chain: chain.name
+    };
+    
     try {
       const baseUrl = process.env.BASE_URL || 'https://tf-lock-alert-bot.vercel.app';
       const enrichmentUrl = `${baseUrl}/api/enrich-lock`;
       
       console.log(`🔗 Enrichment URL: ${enrichmentUrl}`);
       
-      // Trigger enrichment (true fire-and-forget - don't wait for response)
-      setImmediate(() => {
-        axios.post(enrichmentUrl, {
-          messageId,
-          txHash,
-          chainId,
-          lockLog,
-          eventName,
-          source,
-          explorerLink,
-          chain: chain.name
-        }, {
-          timeout: 30000, // 30 seconds for enrichment to complete
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }).then(response => {
-          console.log(`✅ Enrichment completed:`, response.data);
-        }).catch(enrichErr => {
-          console.error(`❌ Enrichment failed:`, enrichErr.message);
-          if (enrichErr.response) {
-            console.error(`Status: ${enrichErr.response.status}, Data:`, enrichErr.response.data);
-          }
-        });
+      // FIXED: Start the enrichment request WITHOUT waiting for completion
+      // Use a promise but DON'T await it - this ensures the request is sent
+      // before the function terminates, but we don't wait for the response
+      const enrichmentPromise = axios.post(enrichmentUrl, enrichmentPayload, {
+        timeout: 45000, // 45 seconds for enrichment to complete
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }).then(response => {
+        console.log(`✅ Enrichment completed:`, response.status);
+      }).catch(enrichErr => {
+        console.error(`❌ Enrichment failed:`, enrichErr.message);
+        if (enrichErr.response) {
+          console.error(`Status: ${enrichErr.response.status}`);
+        }
       });
+      
+      // Don't await, but ensure the request has been initiated
+      // Small delay to ensure HTTP connection is established
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
     } catch (urlErr) {
-      console.error("⚠️ Failed to build enrichment URL:", urlErr.message);
+      console.error("⚠️ Failed to trigger enrichment:", urlErr.message);
       // Continue anyway, webhook already responded
     }
+    
+    // Respond to webhook after enrichment has been triggered
+    return res.status(200).json({ 
+      status: "sent",
+      dbSaved,
+      txHash,
+      messageId
+    });
     
   } catch (err) {
     console.error("❌ Webhook error:", err.message, err.stack);
