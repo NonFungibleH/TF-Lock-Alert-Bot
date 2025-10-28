@@ -700,10 +700,10 @@ module.exports = async (req, res) => {
       parts.push(`Liquidity: ${liqStr}`);
     }
     
-    // Show pair age (good proxy for token age)
+    // Show pool age (good proxy for token age)
     const pairAge = formatContractAge(enriched.pairCreatedAt);
     if (pairAge) {
-      parts.push(`Pair Age: ${pairAge}`);
+      parts.push(`Pool Age: ${pairAge}`);
     }
     
     if (enriched.securityData?.holderCount) {
