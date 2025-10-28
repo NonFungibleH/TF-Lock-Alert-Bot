@@ -608,7 +608,25 @@ module.exports = async (req, res) => {
       return res.status(200).json({ status: "failed", reason: "no_token_address" });
     }
     
-    // Get token info
+    // Check if this is an NFT lock (Team Finance DepositNFT with NFT Position Manager)
+    const isNFTLock = eventName === "DepositNFT" && source === "Team Finance";
+    
+    if (isNFTLock) {
+      console.log("⚠️ NFT Position lock detected - skipping for now");
+      await editTelegramMessage(
+        messageId, 
+        `🔒 **NFT Position Lock Detected**\n\n` +
+        `This is a Uniswap/PancakeSwap V3 LP position lock.\n\n` +
+        `NFT Manager: \`${tokenData.tokenAddress.slice(0, 6)}...${tokenData.tokenAddress.slice(-4)}\`\n` +
+        `Duration: ${formatDuration(tokenData.unlockTime)}\n` +
+        `Source: ${source}\n` +
+        `Chain: ${chain}\n\n` +
+        `[View Transaction](${explorerLink})`
+      );
+      return res.status(200).json({ status: "skipped", reason: "nft_lock" });
+    }
+    
+    // Get token info (only for ERC20 tokens)
     const tokenInfo = await getTokenInfo(tokenData.tokenAddress, chainId);
     
     if (!tokenInfo) {
@@ -676,15 +694,6 @@ module.exports = async (req, res) => {
     parts.push("💎 **Token info**");
     parts.push(`Token: $${tokenInfo.symbol}`);
     
-    // Show pair name if available
-    if (enriched.pairName) {
-      parts.push(`Pair: ${enriched.pairName}`);
-    } else if (tokenData.isLPLock && tokenData.token1) {
-      parts.push(`Pair: ${tokenInfo.symbol}/[paired token]`);
-    }
-    
-    parts.push(`Address: \`${tokenData.tokenAddress.slice(0, 6)}...${tokenData.tokenAddress.slice(-4)}\``);
-    
     if (enriched.price) {
       const priceStr = enriched.price < 0.01 
         ? enriched.price.toExponential(6)
@@ -699,6 +708,17 @@ module.exports = async (req, res) => {
         ? `$${(enriched.marketCap / 1000).toFixed(1)}K`
         : `$${enriched.marketCap.toFixed(0)}`;
       parts.push(`MC: ${mcStr}`);
+    }
+    
+    if (enriched.securityData?.holderCount) {
+      parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
+    }
+    
+    // Show pair name if available
+    if (enriched.pairName) {
+      parts.push(`Pair: ${enriched.pairName}`);
+    } else if (tokenData.isLPLock && tokenData.token1) {
+      parts.push(`Pair: ${tokenInfo.symbol}/[paired token]`);
     }
     
     if (enriched.liquidity) {
@@ -716,32 +736,38 @@ module.exports = async (req, res) => {
       parts.push(`Pool Age: ${pairAge}`);
     }
     
-    if (enriched.securityData?.holderCount) {
-      parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
-    }
-    
-    // Always show owner balance if available
+    // Always show owner balance if available (changed label to "Owner holds:")
     if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
-      parts.push(`Owner: ${enriched.securityData.ownerBalance.toFixed(1)}%`);
+      parts.push(`Owner holds: ${enriched.securityData.ownerBalance.toFixed(1)}%`);
     }
     
     parts.push("");
     parts.push("🔐 **Lock details**");
     
     if (amount) {
-      const amountStr = amount >= 1000000 
-        ? `${(amount / 1000000).toFixed(1)}M`
-        : amount >= 1000
-        ? `${(amount / 1000).toFixed(1)}K`
-        : amount.toFixed(0);
-      parts.push(`Amount: ${amountStr} tokens`);
+      // Smart rounding for amounts with many decimals
+      let amountStr;
+      if (amount >= 1000000) {
+        amountStr = `${(amount / 1000000).toFixed(1)}M`;
+      } else if (amount >= 1000) {
+        amountStr = `${(amount / 1000).toFixed(1)}K`;
+      } else if (amount >= 1) {
+        amountStr = amount.toFixed(0);
+      } else if (amount >= 0.01) {
+        amountStr = amount.toFixed(2);
+      } else {
+        amountStr = amount.toFixed(4);
+      }
+      
+      // Combine amount and USD value on same line
+      if (usdValue) {
+        parts.push(`Amount: ${amountStr} tokens ($${Number(usdValue).toLocaleString()})`);
+      } else {
+        parts.push(`Amount: ${amountStr} tokens`);
+      }
     } else if (tokenData.isLPLock && tokenData.lpPosition) {
       const liquidityFormatted = (Number(tokenData.lpPosition.liquidity) / 1e18).toFixed(2);
       parts.push(`Amount: ${liquidityFormatted} LP tokens`);
-    }
-    
-    if (usdValue) {
-      parts.push(`Value: $${Number(usdValue).toLocaleString()}`);
     }
     
     // Show native token value if available
@@ -764,7 +790,7 @@ module.exports = async (req, res) => {
     }
     
     parts.push(`Duration: ${duration}`);
-    parts.push(`Source: ${source}`);
+    parts.push(`Platform: ${source}`);
     parts.push(`Chain: ${chain}`);
     
     // Quick check section
@@ -773,7 +799,7 @@ module.exports = async (req, res) => {
       parts.push("⚡ **Quick check**");
       
       if (enriched.securityData.isOpenSource === true) {
-        parts.push("✅ Verified contract");
+        parts.push("Verified contract");
       } else if (enriched.securityData.isOpenSource === false) {
         parts.push("⚠️ Not verified");
       }
