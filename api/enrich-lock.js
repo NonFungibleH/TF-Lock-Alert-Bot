@@ -534,6 +534,17 @@ function formatDuration(unlockTime) {
   // 1 year or more: show years and months
   const remainingDays = days - (years * 365);
   const remainingMonths = Math.floor(remainingDays / 30);
+  
+  // If remaining months >= 12, add to years instead
+  if (remainingMonths >= 12) {
+    const adjustedYears = years + Math.floor(remainingMonths / 12);
+    const adjustedMonths = remainingMonths % 12;
+    if (adjustedMonths > 0) {
+      return `${adjustedYears} ${adjustedYears === 1 ? 'year' : 'years'} ${adjustedMonths} ${adjustedMonths === 1 ? 'month' : 'months'}`;
+    }
+    return `${adjustedYears} ${adjustedYears === 1 ? 'year' : 'years'}`;
+  }
+  
   if (remainingMonths > 0) {
     return `${years} ${years === 1 ? 'year' : 'years'} ${remainingMonths} ${remainingMonths === 1 ? 'month' : 'months'}`;
   }
@@ -690,6 +701,15 @@ module.exports = async (req, res) => {
     
     console.log(`Token info fetched: ${tokenInfo.symbol}`);
     
+    // For LP locks, also fetch paired token info
+    let pairedTokenInfo = null;
+    if (tokenData.isLPLock && tokenData.token1) {
+      pairedTokenInfo = await getTokenInfo(tokenData.token1, chainId);
+      if (pairedTokenInfo) {
+        console.log(`Paired token info fetched: ${pairedTokenInfo.symbol}`);
+      }
+    }
+    
     // Calculate amounts
     const amount = tokenData.amount ? Number(tokenData.amount) / Math.pow(10, tokenInfo.decimals) : null;
     const duration = formatDuration(tokenData.unlockTime);
@@ -770,6 +790,8 @@ module.exports = async (req, res) => {
     // Show pair name if available
     if (enriched.pairName) {
       parts.push(`Pair: ${enriched.pairName}`);
+    } else if (tokenData.isLPLock && pairedTokenInfo) {
+      parts.push(`Pair: ${tokenInfo.symbol}/${pairedTokenInfo.symbol}`);
     } else if (tokenData.isLPLock && tokenData.token1) {
       parts.push(`Pair: ${tokenInfo.symbol}/[paired token]`);
     }
