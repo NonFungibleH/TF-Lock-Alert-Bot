@@ -500,8 +500,18 @@ function formatContractAge(pairCreatedAt) {
   const now = Date.now();
   const diffMs = now - created;
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffMinutes = Math.floor(diffMs / (1000 * 60));
   
-  if (diffDays < 1) return "< 1 day old";
+  // Show hours and minutes if less than 1 day
+  if (diffDays < 1) {
+    if (diffHours < 1) {
+      return `${diffMinutes} ${diffMinutes === 1 ? 'minute' : 'minutes'} old`;
+    }
+    const remainingMinutes = diffMinutes - (diffHours * 60);
+    return `${diffHours}h ${remainingMinutes}m old`;
+  }
+  
   if (diffDays === 1) return "1 day old";
   if (diffDays < 7) return `${diffDays} days old`;
   if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks old`;
@@ -710,6 +720,11 @@ module.exports = async (req, res) => {
       parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
     }
     
+    // Always show owner balance if available
+    if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
+      parts.push(`Owner: ${enriched.securityData.ownerBalance.toFixed(1)}%`);
+    }
+    
     parts.push("");
     parts.push("🔐 **Lock details**");
     
@@ -734,12 +749,13 @@ module.exports = async (req, res) => {
       const nativeStr = enriched.nativeTokenAmount >= 1 
         ? enriched.nativeTokenAmount.toFixed(2)
         : enriched.nativeTokenAmount.toFixed(4);
-      parts.push(`Native: ${nativeStr} ${nativeSymbol}`);
       
-      // Show USD value of native token if we have the price
+      // Combine native amount and USD value on one line
       if (nativePrice) {
         const nativeUsdValue = (enriched.nativeTokenAmount * nativePrice).toFixed(2);
-        parts.push(`Native USD: $${Number(nativeUsdValue).toLocaleString()}`);
+        parts.push(`Native: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
+      } else {
+        parts.push(`Native: ${nativeStr} ${nativeSymbol}`);
       }
     }
     
