@@ -570,17 +570,17 @@ function formatContractAge(pairCreatedAt) {
   // Show hours and minutes if less than 1 day
   if (diffDays < 1) {
     if (diffHours < 1) {
-      return `${diffMinutes} ${diffMinutes === 1 ? 'minute' : 'minutes'} old`;
+      return `${diffMinutes} ${diffMinutes === 1 ? 'minute' : 'minutes'}`;
     }
     const remainingMinutes = diffMinutes - (diffHours * 60);
-    return `${diffHours}h ${remainingMinutes}m old`;
+    return `${diffHours}h ${remainingMinutes}m`;
   }
   
-  if (diffDays === 1) return "1 day old";
-  if (diffDays < 7) return `${diffDays} days old`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks old`;
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)} months old`;
-  return `${Math.floor(diffDays / 365)} years old`;
+  if (diffDays === 1) return "1 day";
+  if (diffDays < 7) return `${diffDays} days`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks`;
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)} months`;
+  return `${Math.floor(diffDays / 365)} years`;
 }
 
 function getBuyLink(tokenAddress, chainId) {
@@ -768,9 +768,17 @@ module.exports = async (req, res) => {
     parts.push(`Token: $${tokenInfo.symbol}`);
     
     if (enriched.price) {
-      const priceStr = enriched.price < 0.01 
-        ? enriched.price.toExponential(6)
-        : enriched.price.toFixed(6);
+      let priceStr;
+      if (enriched.price >= 1) {
+        // $1 or more: show 2-4 decimals
+        priceStr = enriched.price.toFixed(enriched.price >= 100 ? 2 : 4);
+      } else if (enriched.price >= 0.0001) {
+        // $0.0001 to $1: show up to 6 significant decimals
+        priceStr = enriched.price.toFixed(6).replace(/\.?0+$/, '');
+      } else {
+        // Very small prices: show 8 decimals
+        priceStr = enriched.price.toFixed(8).replace(/\.?0+$/, '');
+      }
       parts.push(`Price: $${priceStr}`);
     }
     
@@ -841,8 +849,28 @@ module.exports = async (req, res) => {
         parts.push(`Amount: ${amountStr} tokens`);
       }
     } else if (tokenData.isLPLock && tokenData.lpPosition) {
-      const liquidityFormatted = (Number(tokenData.lpPosition.liquidity) / 1e18).toFixed(2);
-      parts.push(`Amount: ${liquidityFormatted} LP tokens`);
+      // For LP locks, show liquidity value instead of raw LP amount
+      const liquidityValue = Number(tokenData.lpPosition.liquidity) / 1e18;
+      
+      // If we have price data, estimate token amounts
+      if (enriched.price && pairedTokenInfo) {
+        // Rough estimation: assume 50/50 value split in the pool
+        const estimatedTokenValue = (enriched.nativeTokenAmount || 0) * (nativePrice || 0);
+        const estimatedTokenAmount = enriched.price > 0 ? estimatedTokenValue / enriched.price : 0;
+        
+        if (estimatedTokenAmount > 0 && estimatedTokenValue > 0) {
+          const tokenAmountStr = estimatedTokenAmount >= 1000000
+            ? `${(estimatedTokenAmount / 1000000).toFixed(2)}M`
+            : estimatedTokenAmount >= 1000
+            ? `${(estimatedTokenAmount / 1000).toFixed(2)}K`
+            : estimatedTokenAmount.toFixed(2);
+          parts.push(`Amount: ~${tokenAmountStr} ${tokenInfo.symbol} ($${estimatedTokenValue.toFixed(2)})`);
+        } else {
+          parts.push(`Amount: ${liquidityValue.toFixed(2)} LP tokens`);
+        }
+      } else {
+        parts.push(`Amount: LP Position (V3)`);
+      }
     }
     
     // Show native token value if available
