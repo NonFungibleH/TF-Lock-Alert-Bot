@@ -11,7 +11,9 @@ const RPC_URLS = {
     "https://eth.llamarpc.com",
     "https://ethereum-rpc.publicnode.com",
     "https://eth.meowrpc.com",
-    "https://eth.drpc.org"
+    "https://eth.drpc.org",
+    "https://rpc.ankr.com/eth",
+    "https://1rpc.io/eth"
   ].filter(Boolean),
   
   56: [
@@ -851,6 +853,24 @@ module.exports = async (req, res) => {
     
   } catch (err) {
     console.error("❌ Enrichment error:", err.message, err.stack);
+    
+    // Try to update the message with a fallback error message
+    try {
+      const { messageId, explorerLink, source, chain } = req.body;
+      if (messageId && explorerLink) {
+        await editTelegramMessage(
+          messageId,
+          `🔒 **New lock detected**\n\n` +
+          `⚠️ Could not fetch token details\n\n` +
+          `Platform: ${source || 'Unknown'}\n` +
+          `Chain: ${chain || 'Unknown'}\n\n` +
+          `[View Transaction](${explorerLink})`
+        );
+      }
+    } catch (updateErr) {
+      console.error("Failed to update message with error:", updateErr.message);
+    }
+    
     return res.status(500).json({ error: err.message });
   }
 };
