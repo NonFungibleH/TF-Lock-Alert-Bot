@@ -482,11 +482,62 @@ function formatDuration(unlockTime) {
   
   if (diff < 0) return "Already unlocked";
   
+  const minutes = Math.floor(diff / 60);
+  const hours = Math.floor(diff / 3600);
   const days = Math.floor(diff / 86400);
-  if (days < 1) return "< 1 day";
-  if (days < 30) return `${days} days`;
-  if (days < 365) return `${Math.floor(days / 30)} months`;
-  return `${Math.floor(days / 365)} years`;
+  const weeks = Math.floor(days / 7);
+  const months = Math.floor(days / 30);
+  const years = Math.floor(days / 365);
+  
+  // Less than 1 hour: show minutes
+  if (hours < 1) {
+    return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
+  }
+  
+  // Less than 1 day: show hours
+  if (days < 1) {
+    const remainingMinutes = minutes - (hours * 60);
+    if (remainingMinutes > 0) {
+      return `${hours}h ${remainingMinutes}m`;
+    }
+    return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+  }
+  
+  // Less than 2 weeks: show days and hours
+  if (days < 14) {
+    const remainingHours = hours - (days * 24);
+    if (remainingHours > 0 && days < 7) {
+      return `${days} ${days === 1 ? 'day' : 'days'} ${remainingHours}h`;
+    }
+    return `${days} ${days === 1 ? 'day' : 'days'}`;
+  }
+  
+  // Less than 2 months: show weeks and days
+  if (days < 60) {
+    const remainingDays = days - (weeks * 7);
+    if (remainingDays > 0) {
+      return `${weeks} ${weeks === 1 ? 'week' : 'weeks'} ${remainingDays} ${remainingDays === 1 ? 'day' : 'days'}`;
+    }
+    return `${weeks} ${weeks === 1 ? 'week' : 'weeks'}`;
+  }
+  
+  // Less than 1 year: show months and weeks
+  if (days < 365) {
+    const remainingDays = days - (months * 30);
+    const remainingWeeks = Math.floor(remainingDays / 7);
+    if (remainingWeeks > 0) {
+      return `${months} ${months === 1 ? 'month' : 'months'} ${remainingWeeks} ${remainingWeeks === 1 ? 'week' : 'weeks'}`;
+    }
+    return `${months} ${months === 1 ? 'month' : 'months'}`;
+  }
+  
+  // 1 year or more: show years and months
+  const remainingDays = days - (years * 365);
+  const remainingMonths = Math.floor(remainingDays / 30);
+  if (remainingMonths > 0) {
+    return `${years} ${years === 1 ? 'year' : 'years'} ${remainingMonths} ${remainingMonths === 1 ? 'month' : 'months'}`;
+  }
+  return `${years} ${years === 1 ? 'year' : 'years'}`;
 }
 
 function formatUnlockDate(unlockTime) {
