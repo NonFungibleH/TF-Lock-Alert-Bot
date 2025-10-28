@@ -799,7 +799,7 @@ module.exports = async (req, res) => {
       parts.push("⚡ **Quick check**");
       
       if (enriched.securityData.isOpenSource === true) {
-        parts.push("Verified contract");
+        parts.push("✅ Verified contract");
       } else if (enriched.securityData.isOpenSource === false) {
         parts.push("⚠️ Not verified");
       }
