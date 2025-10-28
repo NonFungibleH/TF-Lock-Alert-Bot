@@ -86,6 +86,31 @@ function extractTokenData(lockLog, eventName, source) {
       return { tokenAddress: null, amount: null, unlockTime: null, version: "V2", isLPLock: false, lpPosition: null };
     }
     
+    // UNCX V2 Uniswap: onNewLock event
+    if (eventName === "onNewLock" && source === "UNCX") {
+      // Data structure for onNewLock:
+      // Offset 0-63: lockID
+      // Offset 64-127: lpToken (the token address)
+      // Offset 128-191: owner
+      // Offset 192-255: amount
+      // Offset 256-319: lockDate
+      // Offset 320-383: unlockDate
+      // Offset 384+: countryCode
+      
+      if (data.length >= 384) {
+        const tokenAddress = `0x${data.slice(90, 130)}`; // lpToken at offset 64, skip 24 padding chars
+        const amountHex = data.slice(194, 258); // amount at offset 192
+        const unlockHex = data.slice(322, 386); // unlockDate at offset 320
+        const amount = BigInt(`0x${amountHex}`);
+        const unlockTime = parseInt(unlockHex, 16);
+        
+        console.log(`UNCX V2 onNewLock: token=${tokenAddress}, amount=${amount.toString()}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
+        
+        return { tokenAddress, amount, unlockTime, version: "UNCX V2", isLPLock: false, lpPosition: null };
+      }
+      return { tokenAddress: null, amount: null, unlockTime: null, version: "UNCX V2", isLPLock: false, lpPosition: null };
+    }
+    
     if (source === "Team Finance" && eventName === "DepositNFT") {
       const tokenAddress = topicsArray[1] ? `0x${topicsArray[1].slice(26)}` : null;
       if (data.length >= 258) {
