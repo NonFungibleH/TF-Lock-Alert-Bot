@@ -245,22 +245,89 @@ async function getTokenInfo(tokenAddress, chainId) {
 
 async function getNativeTokenPrice(chainId) {
   try {
-    const nativeTokens = {
-      1: 'ethereum',
-      56: 'binancecoin', 
-      137: 'matic-network',
-      8453: 'ethereum'
+    const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
+    const chainName = chainMap[chainId];
+    
+    // Wrapped native token addresses to search for price
+    const wrappedNativeTokens = {
+      1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
+      56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
+      137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC/WPOL
+      8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
     };
     
-    const tokenId = nativeTokens[chainId];
-    if (!tokenId) return null;
+    const nativeTokenAddress = wrappedNativeTokens[chainId];
+    if (!nativeTokenAddress) return null;
     
-    const response = await axios.get(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=usd`,
-      { timeout: 3000 }
-    );
+    console.log(`Fetching native token price for ${chainName}...`);
     
-    return response.data[tokenId]?.usd || null;
+    // Try DexScreener first
+    try {
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${nativeTokenAddress}`;
+      const response = await axios.get(url, { timeout: 5000 });
+      
+      if (response.data?.pairs && response.data.pairs.length > 0) {
+        const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
+        
+        if (chainPairs.length > 0) {
+          // Find USD pair (paired with USDC/USDT)
+          const usdPair = chainPairs.find(p => 
+            p.quoteToken?.symbol === 'USDC' || 
+            p.quoteToken?.symbol === 'USDT' ||
+            p.quoteToken?.symbol === 'DAI'
+          );
+          
+          if (usdPair && usdPair.priceUsd) {
+            const price = parseFloat(usdPair.priceUsd);
+            console.log(`✅ Native token price from DexScreener: $${price}`);
+            return price;
+          }
+          
+          // Fallback to highest liquidity pair
+          const bestPair = chainPairs.sort((a, b) => 
+            (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
+          )[0];
+          
+          if (bestPair && bestPair.priceUsd) {
+            const price = parseFloat(bestPair.priceUsd);
+            console.log(`✅ Native token price from DexScreener (best pair): $${price}`);
+            return price;
+          }
+        }
+      }
+    } catch (err) {
+      console.log(`DexScreener native price failed: ${err.message}`);
+    }
+    
+    // Try DexTools as fallback
+    try {
+      const url = `https://www.dextools.io/shared/search/pair?query=${nativeTokenAddress}`;
+      const response = await axios.get(url, { 
+        timeout: 5000,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      
+      if (response.data?.results && response.data.results.length > 0) {
+        const chainPairs = response.data.results.filter(r => {
+          const pairChain = r.id.chain?.toLowerCase();
+          return pairChain === chainName || 
+                 (chainName === 'bsc' && pairChain === 'bnb') ||
+                 (chainName === 'polygon' && pairChain === 'matic');
+        });
+        
+        if (chainPairs.length > 0 && chainPairs[0].price) {
+          const price = parseFloat(chainPairs[0].price);
+          console.log(`✅ Native token price from DexTools: $${price}`);
+          return price;
+        }
+      }
+    } catch (err) {
+      console.log(`DexTools native price failed: ${err.message}`);
+    }
+    
+    console.log(`❌ Could not fetch native token price for ${chainName}`);
+    return null;
+    
   } catch (err) {
     console.error("Failed to fetch native token price:", err.message);
     return null;
@@ -929,6 +996,9 @@ module.exports = async (req, res) => {
       } else {
         parts.push(`Amount: ${primaryAmountStr} ${tokenInfo.symbol} + ${pairedAmountStr} ${pairedTokenInfo.symbol}`);
       }
+    } else if (tokenData.isLPLock && pairedTokenInfo) {
+      // LP lock but couldn't calculate amounts - show basic info
+      parts.push(`Amount: LP Position (${tokenInfo.symbol}/${pairedTokenInfo.symbol})`);
     } else if (amount) {
       let amountStr;
       if (amount >= 1000000) {
