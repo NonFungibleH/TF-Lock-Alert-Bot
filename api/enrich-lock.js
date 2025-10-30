@@ -476,6 +476,11 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
     
     console.log(`Fetching enrichment data for ${tokenAddress} on ${chainName}`);
     
+    let dexScreenerData = null;
+    let dexToolsData = null;
+    let goPlusData = null;
+    
+    // Try DexScreener first
     try {
       console.log(`Trying DexScreener API...`);
       const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
@@ -510,28 +515,7 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
             console.log(`✅ Native token in pair: ${nativeTokenAmount} ${bestPair.quoteToken?.symbol}`);
           }
           
-          let securityData = {};
-          try {
-            const secUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${tokenAddress}`;
-            const secResponse = await axios.get(secUrl, { timeout: 3000 });
-            const secResult = secResponse.data?.result?.[tokenAddress.toLowerCase()];
-            
-            if (secResult) {
-              securityData = {
-                isOpenSource: secResult.is_open_source === "1",
-                isHoneypot: secResult.is_honeypot === "1",
-                canTakeBackOwnership: secResult.can_take_back_ownership === "1",
-                ownerBalance: parseFloat(secResult.owner_percent || 0) * 100,
-                holderCount: parseInt(secResult.holder_count || 0),
-                topHolderPercent: parseFloat(secResult.holder_top10_percent || 0) * 100
-              };
-              console.log(`✅ GoPlus: holders=${securityData.holderCount}, verified=${securityData.isOpenSource}`);
-            }
-          } catch (secErr) {
-            console.log(`GoPlus failed: ${secErr.message}`);
-          }
-          
-          return {
+          dexScreenerData = {
             price: bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : null,
             marketCap: bestPair.marketCap || null,
             liquidity: bestPair.liquidity?.usd || null,
@@ -539,17 +523,19 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
             pairName: `${bestPair.baseToken?.symbol || ''}/${bestPair.quoteToken?.symbol || ''}`,
             pairAddress: bestPair.pairAddress || null,
             pairCreatedAt: bestPair.pairCreatedAt || null,
-            securityData,
             source: 'DexScreener'
           };
         }
       }
       
-      console.log(`DexScreener: No pairs for ${chainName}`);
+      if (!dexScreenerData) {
+        console.log(`DexScreener: No pairs for ${chainName}`);
+      }
     } catch (err) {
       console.log(`DexScreener failed: ${err.message}`);
     }
     
+    // Try DexTools (for additional metrics like txns, buy/sell tax)
     try {
       console.log(`Trying DexTools API...`);
       const url = `https://www.dextools.io/shared/search/pair?query=${tokenAddress}`;
@@ -570,37 +556,75 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
           const bestPair = chainPairs[0];
           console.log(`✅ DexTools: price=$${bestPair.price}`);
           
-          return {
+          dexToolsData = {
             price: bestPair.price || null,
             marketCap: bestPair.metrics?.marketCap || null,
             liquidity: bestPair.metrics?.liquidity || null,
-            nativeTokenAmount: null,
+            totalTransactions: bestPair.metrics?.transactions || null,
+            buyTax: bestPair.metrics?.buyTax || null,
+            sellTax: bestPair.metrics?.sellTax || null,
             pairName: bestPair.name || null,
-            pairAddress: null,
-            pairCreatedAt: null,
-            securityData: {},
             source: 'DexTools'
           };
+          
+          if (dexToolsData.totalTransactions) {
+            console.log(`✅ DexTools: ${dexToolsData.totalTransactions} total transactions`);
+          }
+          if (dexToolsData.buyTax !== null || dexToolsData.sellTax !== null) {
+            console.log(`✅ DexTools: Buy tax: ${dexToolsData.buyTax}%, Sell tax: ${dexToolsData.sellTax}%`);
+          }
         }
       }
       
-      console.log(`DexTools: No pairs for ${chainName}`);
+      if (!dexToolsData) {
+        console.log(`DexTools: No pairs for ${chainName}`);
+      }
     } catch (err) {
       console.log(`DexTools failed: ${err.message}`);
     }
     
-    console.log(`❌ Could not fetch data from DexScreener or DexTools`);
-    return {
-      price: null,
-      marketCap: null,
-      liquidity: null,
-      nativeTokenAmount: null,
-      pairName: null,
-      pairAddress: null,
-      pairCreatedAt: null,
-      securityData: {},
-      source: null
+    // Try GoPlus for security data
+    try {
+      const secUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${tokenAddress}`;
+      const secResponse = await axios.get(secUrl, { timeout: 5000 });
+      const secResult = secResponse.data?.result?.[tokenAddress.toLowerCase()];
+      
+      if (secResult) {
+        goPlusData = {
+          isOpenSource: secResult.is_open_source === "1",
+          isHoneypot: secResult.is_honeypot === "1",
+          canTakeBackOwnership: secResult.can_take_back_ownership === "1",
+          ownerBalance: parseFloat(secResult.owner_percent || 0) * 100,
+          holderCount: parseInt(secResult.holder_count || 0),
+          topHolderPercent: parseFloat(secResult.holder_top10_percent || 0) * 100
+        };
+        console.log(`✅ GoPlus: holders=${goPlusData.holderCount}, top10=${goPlusData.topHolderPercent}%, verified=${goPlusData.isOpenSource}`);
+      }
+    } catch (secErr) {
+      console.log(`GoPlus failed: ${secErr.message}`);
+    }
+    
+    // Merge data from all sources (prefer DexScreener for price/liquidity, DexTools for metrics)
+    const mergedData = {
+      price: dexScreenerData?.price || dexToolsData?.price || null,
+      marketCap: dexScreenerData?.marketCap || dexToolsData?.marketCap || null,
+      liquidity: dexScreenerData?.liquidity || dexToolsData?.liquidity || null,
+      nativeTokenAmount: dexScreenerData?.nativeTokenAmount || null,
+      pairName: dexScreenerData?.pairName || dexToolsData?.pairName || null,
+      pairAddress: dexScreenerData?.pairAddress || null,
+      pairCreatedAt: dexScreenerData?.pairCreatedAt || null,
+      totalTransactions: dexToolsData?.totalTransactions || null,
+      buyTax: dexToolsData?.buyTax || null,
+      sellTax: dexToolsData?.sellTax || null,
+      securityData: goPlusData || {},
+      source: dexScreenerData ? 'DexScreener' : dexToolsData ? 'DexTools' : null
     };
+    
+    if (!mergedData.price && !mergedData.liquidity) {
+      console.log(`❌ Could not fetch data from DexScreener or DexTools`);
+    }
+    
+    return mergedData;
     
   } catch (err) {
     console.error("Enrichment error:", err.message);
@@ -612,6 +636,9 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
       pairName: null,
       pairAddress: null,
       pairCreatedAt: null,
+      totalTransactions: null,
+      buyTax: null,
+      sellTax: null,
       securityData: {},
       source: null
     };
@@ -958,6 +985,28 @@ module.exports = async (req, res) => {
     const pairAge = formatContractAge(enriched.pairCreatedAt);
     if (pairAge) {
       parts.push(`Pool Age: ${pairAge}`);
+    }
+    
+    // NEW: Total transactions from DexTools
+    if (enriched.totalTransactions) {
+      const txStr = enriched.totalTransactions >= 1000000
+        ? `${(enriched.totalTransactions / 1000000).toFixed(1)}M`
+        : enriched.totalTransactions >= 1000
+        ? `${(enriched.totalTransactions / 1000).toFixed(1)}K`
+        : enriched.totalTransactions.toLocaleString();
+      parts.push(`Total TXs: ${txStr}`);
+    }
+    
+    // NEW: Buy/Sell tax from DexTools
+    if (enriched.buyTax !== null || enriched.sellTax !== null) {
+      const buyTaxStr = enriched.buyTax !== null ? `${enriched.buyTax}%` : 'N/A';
+      const sellTaxStr = enriched.sellTax !== null ? `${enriched.sellTax}%` : 'N/A';
+      parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
+    }
+    
+    // NEW: Top 10 holders from GoPlus
+    if (enriched.securityData?.topHolderPercent) {
+      parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
     }
     
     if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
