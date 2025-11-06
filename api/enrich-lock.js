@@ -613,6 +613,14 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
             pairName: `${bestPair.baseToken?.symbol || ''}/${bestPair.quoteToken?.symbol || ''}`,
             pairAddress: bestPair.pairAddress || null,
             pairCreatedAt: bestPair.pairCreatedAt || null,
+            // NEW: Extract price changes
+            priceChange5m: bestPair.priceChange?.m5 || null,
+            priceChange1h: bestPair.priceChange?.h1 || null,
+            priceChange6h: bestPair.priceChange?.h6 || null,
+            // NEW: Extract volume
+            volume24h: bestPair.volume?.h24 || null,
+            // NEW: Extract buys/sells
+            txns24h: bestPair.txns?.h24 || null,
             source: 'DexScreener'
           };
         }
@@ -706,6 +714,13 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
       totalTransactions: dexToolsData?.totalTransactions || null,
       buyTax: dexToolsData?.buyTax || null,
       sellTax: dexToolsData?.sellTax || null,
+      // NEW: Price changes
+      priceChange5m: dexScreenerData?.priceChange5m || null,
+      priceChange1h: dexScreenerData?.priceChange1h || null,
+      priceChange6h: dexScreenerData?.priceChange6h || null,
+      // NEW: Volume and txns
+      volume24h: dexScreenerData?.volume24h || null,
+      txns24h: dexScreenerData?.txns24h || null,
       securityData: goPlusData || {},
       source: dexScreenerData ? 'DexScreener' : dexToolsData ? 'DexTools' : null
     };
@@ -1065,6 +1080,26 @@ module.exports = async (req, res) => {
         priceStr = enriched.price.toFixed(8).replace(/\.?0+$/, '');
       }
       parts.push(`Price: $${priceStr}`);
+      
+      // NEW: Price changes on same line
+      if (enriched.priceChange5m !== null || enriched.priceChange1h !== null || enriched.priceChange6h !== null) {
+        const changes = [];
+        if (enriched.priceChange5m !== null) {
+          const sign = enriched.priceChange5m >= 0 ? '+' : '';
+          changes.push(`5m: ${sign}${enriched.priceChange5m.toFixed(1)}%`);
+        }
+        if (enriched.priceChange1h !== null) {
+          const sign = enriched.priceChange1h >= 0 ? '+' : '';
+          changes.push(`1h: ${sign}${enriched.priceChange1h.toFixed(1)}%`);
+        }
+        if (enriched.priceChange6h !== null) {
+          const sign = enriched.priceChange6h >= 0 ? '+' : '';
+          changes.push(`6h: ${sign}${enriched.priceChange6h.toFixed(1)}%`);
+        }
+        if (changes.length > 0) {
+          parts.push(changes.join(' | '));
+        }
+      }
     }
     
     if (enriched.marketCap) {
@@ -1086,6 +1121,15 @@ module.exports = async (req, res) => {
       parts.push(`Pair: ${tokenInfo.symbol}/${pairedTokenInfo.symbol}`);
     }
     
+    const pairAge = formatContractAge(enriched.pairCreatedAt);
+    if (pairAge) {
+      parts.push(`Pool Age: ${pairAge}`);
+    }
+    
+    // NEW: Trading Stats section
+    parts.push("");
+    parts.push("📊 **Trading stats**");
+    
     if (enriched.liquidity) {
       const liqStr = enriched.liquidity >= 1000000
         ? `$${(enriched.liquidity / 1000000).toFixed(1)}M`
@@ -1095,12 +1139,39 @@ module.exports = async (req, res) => {
       parts.push(`Liquidity: ${liqStr}`);
     }
     
-    const pairAge = formatContractAge(enriched.pairCreatedAt);
-    if (pairAge) {
-      parts.push(`Pool Age: ${pairAge}`);
+    // NEW: Volume 24h
+    if (enriched.volume24h) {
+      const volStr = enriched.volume24h >= 1000000
+        ? `$${(enriched.volume24h / 1000000).toFixed(1)}M`
+        : enriched.volume24h >= 1000
+        ? `$${(enriched.volume24h / 1000).toFixed(1)}K`
+        : `$${enriched.volume24h.toFixed(0)}`;
+      parts.push(`Volume 24h: ${volStr}`);
     }
     
-    // NEW: Total transactions from DexTools
+    // NEW: Buys/Sells ratio
+    if (enriched.txns24h) {
+      const buys = enriched.txns24h.buys || 0;
+      const sells = enriched.txns24h.sells || 0;
+      if (buys > 0 || sells > 0) {
+        let ratioText = '';
+        if (sells > 0) {
+          const ratio = buys / sells;
+          if (ratio > 1) {
+            ratioText = ` (${ratio.toFixed(1)}x more buys)`;
+          } else if (ratio < 1) {
+            const inverseRatio = sells / buys;
+            ratioText = ` (${inverseRatio.toFixed(1)}x more sells)`;
+          } else {
+            ratioText = ' (equal)';
+          }
+        } else if (buys > 0) {
+          ratioText = ' (only buys)';
+        }
+        parts.push(`Buys/Sells: ${buys}/${sells}${ratioText}`);
+      }
+    }
+    
     if (enriched.totalTransactions) {
       const txStr = enriched.totalTransactions >= 1000000
         ? `${(enriched.totalTransactions / 1000000).toFixed(1)}M`
@@ -1110,20 +1181,37 @@ module.exports = async (req, res) => {
       parts.push(`Total TXs: ${txStr}`);
     }
     
-    // NEW: Buy/Sell tax from DexTools
+    // NEW: Security section
+    parts.push("");
+    parts.push("⚡ **Security**");
+    
     if (enriched.buyTax !== null || enriched.sellTax !== null) {
       const buyTaxStr = enriched.buyTax !== null ? `${enriched.buyTax}%` : 'N/A';
       const sellTaxStr = enriched.sellTax !== null ? `${enriched.sellTax}%` : 'N/A';
       parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
     }
     
-    // NEW: Top 10 holders from GoPlus
     if (enriched.securityData?.topHolderPercent) {
       parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
     }
     
     if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
       parts.push(`Owner holds: ${enriched.securityData.ownerBalance.toFixed(1)}%`);
+    }
+    
+    // Add verification and honeypot checks
+    if (enriched.securityData && Object.keys(enriched.securityData).length > 0) {
+      if (enriched.securityData.isOpenSource === true) {
+        parts.push("✅ Verified contract");
+      } else if (enriched.securityData.isOpenSource === false) {
+        parts.push("⚠️ Not verified");
+      }
+      
+      if (enriched.securityData.isHoneypot === false) {
+        parts.push("✅ Not honeypot");
+      } else if (enriched.securityData.isHoneypot === true) {
+        parts.push("🔴 Honeypot detected!");
+      }
     }
     
     parts.push("");
@@ -1205,28 +1293,6 @@ module.exports = async (req, res) => {
     parts.push(`Platform: ${source}`);
     parts.push(`Chain: ${chain}`);
     
-    if (enriched.securityData && Object.keys(enriched.securityData).length > 0) {
-      parts.push("");
-      parts.push("⚡ **Quick check**");
-      
-      if (enriched.securityData.isOpenSource === true) {
-        parts.push("✅ Verified contract");
-      } else if (enriched.securityData.isOpenSource === false) {
-        parts.push("⚠️ Not verified");
-      }
-      
-      if (enriched.securityData.isHoneypot === false) {
-        parts.push("✅ Not honeypot");
-      } else if (enriched.securityData.isHoneypot === true) {
-        parts.push("🔴 Honeypot detected!");
-      }
-      
-      if (enriched.securityData.ownerBalance > 50) {
-        parts.push(`🔴 Owner holds ${enriched.securityData.ownerBalance.toFixed(1)}%`);
-      } else if (enriched.securityData.ownerBalance > 20) {
-        parts.push(`⚠️ Owner holds ${enriched.securityData.ownerBalance.toFixed(1)}%`);
-      }
-    }
     
     parts.push("");
     parts.push("🔗 **Links**");
