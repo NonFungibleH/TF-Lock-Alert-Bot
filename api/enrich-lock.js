@@ -1498,10 +1498,6 @@ module.exports = async (req, res) => {
       parts.push(`MC: ${mcStr}`);
     }
     
-    if (enriched.securityData?.holderCount) {
-      parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
-    }
-    
     if (enriched.pairName) {
       parts.push(`Pair: ${enriched.pairName}`);
     } else if (tokenData.isLPLock && pairedTokenInfo) {
@@ -1755,9 +1751,20 @@ module.exports = async (req, res) => {
       parts.push(`Total TXs: ${txStr}`);
     }
     
+    // Holder count
+    if (enriched.securityData?.holderCount) {
+      parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
+    }
+    
     // Top 10 holders percentage
     if (enriched.securityData?.topHolderPercent) {
       parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
+    }
+    
+    // Market Cap to Liquidity Ratio
+    if (enriched.marketCap && enriched.liquidity && enriched.liquidity > 0) {
+      const mcLiqRatio = (enriched.marketCap / enriched.liquidity).toFixed(2);
+      parts.push(`MC/Liq Ratio: ${mcLiqRatio}x`);
     }
     
     // Pattern warnings (if any)
@@ -1781,9 +1788,13 @@ module.exports = async (req, res) => {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId] || "ethereum";
     
-    parts.push(`[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress})`);
-    parts.push(`[DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress})`);
-    parts.push(`[TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
+    // All links on one line separated by |
+    const links = [
+      `[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress})`,
+      `[DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress})`,
+      `[TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`
+    ];
+    parts.push(links.join(' | '));
     
     // 7. Search on X
     parts.push("");
