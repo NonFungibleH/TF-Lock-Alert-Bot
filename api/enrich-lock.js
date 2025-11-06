@@ -1616,10 +1616,6 @@ module.exports = async (req, res) => {
       parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
     }
     
-    if (enriched.securityData?.topHolderPercent) {
-      parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
-    }
-    
     if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
       const ownerPercent = enriched.securityData.ownerBalance;
       let ownerEmoji = '';
@@ -1757,6 +1753,11 @@ module.exports = async (req, res) => {
         ? `${(enriched.totalTransactions / 1000).toFixed(1)}K`
         : enriched.totalTransactions.toLocaleString();
       parts.push(`Total TXs: ${txStr}`);
+    }
+    
+    // Top 10 holders percentage
+    if (enriched.securityData?.topHolderPercent) {
+      parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
     }
     
     // Pattern warnings (if any)
