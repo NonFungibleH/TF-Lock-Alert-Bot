@@ -120,6 +120,53 @@ async function checkIfLPToken(tokenAddress, chainId) {
   }
 }
 
+// Detect if lock fee was paid or whitelisted
+function detectLockFee(txData, lockContractAddress, chainId) {
+  try {
+    // Check for internal transactions (ETH/BNB transfers)
+    const txsInternal = txData.txsInternal || [];
+    
+    // Look for value transfer to the lock contract
+    const feePaid = txsInternal.find(tx => 
+      tx.to && tx.to.toLowerCase() === lockContractAddress.toLowerCase() && 
+      tx.value && parseFloat(tx.value) > 0
+    );
+    
+    if (feePaid) {
+      const feeInNative = parseFloat(feePaid.value) / 1e18;
+      return {
+        paid: true,
+        amount: feeInNative,
+        whitelisted: false
+      };
+    }
+    
+    // Also check main transaction value
+    const txs = txData.txs || [];
+    if (txs.length > 0) {
+      const mainTx = txs[0];
+      if (mainTx.value && parseFloat(mainTx.value) > 0) {
+        const feeInNative = parseFloat(mainTx.value) / 1e18;
+        return {
+          paid: true,
+          amount: feeInNative,
+          whitelisted: false
+        };
+      }
+    }
+    
+    // No fee found = whitelisted
+    return {
+      paid: false,
+      amount: 0,
+      whitelisted: true
+    };
+  } catch (err) {
+    console.error("Lock fee detection error:", err.message);
+    return null;
+  }
+}
+
 // Extract lock owner address from event data
 function extractLockOwner(lockLog, eventName, source) {
   try {
@@ -998,10 +1045,19 @@ module.exports = async (req, res) => {
     console.log("Method:", req.method);
     console.log("Body keys:", Object.keys(req.body || {}));
     
-    const { messageId, txHash, chainId, lockLog, eventName, source, explorerLink, chain } = req.body;
+    const { messageId, txHash, chainId, lockLog, eventName, source, explorerLink, chain, txData } = req.body;
     
     if (!messageId || !chainId || !lockLog) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // NEW: Detect lock fee if transaction data is available
+    let lockFeeInfo = null;
+    if (txData && lockLog.address) {
+      lockFeeInfo = detectLockFee(txData, lockLog.address, chainId);
+      if (lockFeeInfo) {
+        console.log(`Lock fee: ${lockFeeInfo.paid ? `${lockFeeInfo.amount} native` : 'Whitelisted'}`);
+      }
     }
     
     if (txHash && enrichmentCache.has(txHash)) {
@@ -1341,6 +1397,21 @@ module.exports = async (req, res) => {
         parts.push(`[${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}](${explorerUrl}${lockOwner})`);
       } else {
         parts.push(`\`${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}\``);
+      }
+      
+      // NEW: Show lock fee
+      if (lockFeeInfo) {
+        if (lockFeeInfo.paid) {
+          const feeAmount = lockFeeInfo.amount.toFixed(4);
+          let feeUSD = '';
+          if (nativePrice) {
+            const usdValue = (lockFeeInfo.amount * nativePrice).toFixed(2);
+            feeUSD = ` ($${usdValue})`;
+          }
+          parts.push(`💰 Lock Fee: ${feeAmount} ${nativeSymbol}${feeUSD}`);
+        } else if (lockFeeInfo.whitelisted) {
+          parts.push(`💰 Lock Fee: Whitelisted`);
+        }
       }
       
       // Note: Lock history requires querying lock platform APIs
