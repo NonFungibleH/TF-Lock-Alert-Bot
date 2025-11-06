@@ -183,7 +183,15 @@ function extractTokenData(lockLog, eventName, source) {
         
         console.log(`UNCX V2 onNewLock: token=${tokenAddress}, amount=${amount.toString()}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
         
-        return { tokenAddress, amount, unlockTime, version: "UNCX V2", isLPLock: false, lpPosition: null };
+        return { 
+          tokenAddress, 
+          amount, 
+          unlockTime, 
+          version: "UNCX V2", 
+          isLPLock: false,
+          lpPosition: null,
+          needsLPCheck: true  // Flag to check if this is an LP token
+        };
       }
       return { tokenAddress: null, amount: null, unlockTime: null, version: "UNCX V2", isLPLock: false, lpPosition: null };
     }
@@ -1033,7 +1041,16 @@ module.exports = async (req, res) => {
     }
     
     // Build message
-    const parts = ["🔒 **New lock detected**", ""];
+    const parts = [];
+    
+    // NEW: Distinguish between LP locks and token locks in the header
+    if (tokenData.isLPLock) {
+      parts.push("💧 **New LP lock detected**");
+    } else {
+      parts.push("🪙 **New token lock detected**");
+    }
+    
+    parts.push("");
     
     parts.push("💎 **Token info**");
     parts.push(`Token: $${tokenInfo.symbol}`);
