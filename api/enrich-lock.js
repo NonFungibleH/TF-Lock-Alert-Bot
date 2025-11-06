@@ -1220,18 +1220,19 @@ module.exports = async (req, res) => {
         : null;
     }
     
-    // Build message
+    // Build message with reordered sections
     const parts = [];
     
-    // NEW: Distinguish between LP locks and token locks in the header
+    // Header with padlock emoji for all lock types
     if (tokenData.isLPLock) {
-      parts.push("💧 **New LP lock detected**");
+      parts.push("🔒 **New LP lock detected**");
     } else {
-      parts.push("🪙 **New token lock detected**");
+      parts.push("🔒 **New token lock detected**");
     }
     
     parts.push("");
     
+    // 1. Token info
     parts.push("💎 **Token info**");
     parts.push(`Token: $${tokenInfo.symbol}`);
     
@@ -1246,7 +1247,7 @@ module.exports = async (req, res) => {
       }
       parts.push(`Price: $${priceStr}`);
       
-      // NEW: Price changes on same line
+      // Price changes on same line
       if (enriched.priceChange5m !== null || enriched.priceChange1h !== null || enriched.priceChange6h !== null) {
         const changes = [];
         if (enriched.priceChange5m !== null) {
@@ -1291,151 +1292,7 @@ module.exports = async (req, res) => {
       parts.push(`Pool Age: ${pairAge}`);
     }
     
-    // NEW: Trading Stats section
-    parts.push("");
-    parts.push("📊 **Trading stats**");
-    
-    if (enriched.liquidity) {
-      const liqStr = enriched.liquidity >= 1000000
-        ? `$${(enriched.liquidity / 1000000).toFixed(1)}M`
-        : enriched.liquidity >= 1000
-        ? `$${(enriched.liquidity / 1000).toFixed(1)}K`
-        : `$${enriched.liquidity.toFixed(0)}`;
-      parts.push(`Liquidity: ${liqStr}`);
-    }
-    
-    // NEW: Volume 24h
-    if (enriched.volume24h) {
-      const volStr = enriched.volume24h >= 1000000
-        ? `$${(enriched.volume24h / 1000000).toFixed(1)}M`
-        : enriched.volume24h >= 1000
-        ? `$${(enriched.volume24h / 1000).toFixed(1)}K`
-        : `$${enriched.volume24h.toFixed(0)}`;
-      parts.push(`Volume 24h: ${volStr}`);
-    }
-    
-    // NEW: Buys/Sells ratio
-    if (enriched.txns24h) {
-      const buys = enriched.txns24h.buys || 0;
-      const sells = enriched.txns24h.sells || 0;
-      if (buys > 0 || sells > 0) {
-        let ratioText = '';
-        if (sells > 0) {
-          const ratio = buys / sells;
-          if (ratio > 1) {
-            ratioText = ` (${ratio.toFixed(1)}x more buys)`;
-          } else if (ratio < 1) {
-            const inverseRatio = sells / buys;
-            ratioText = ` (${inverseRatio.toFixed(1)}x more sells)`;
-          } else {
-            ratioText = ' (equal)';
-          }
-        } else if (buys > 0) {
-          ratioText = ' (only buys)';
-        }
-        parts.push(`Buys/Sells: ${buys}/${sells}${ratioText}`);
-      }
-    }
-    
-    if (enriched.totalTransactions) {
-      const txStr = enriched.totalTransactions >= 1000000
-        ? `${(enriched.totalTransactions / 1000000).toFixed(1)}M`
-        : enriched.totalTransactions >= 1000
-        ? `${(enriched.totalTransactions / 1000).toFixed(1)}K`
-        : enriched.totalTransactions.toLocaleString();
-      parts.push(`Total TXs: ${txStr}`);
-    }
-    
-    // NEW: Security section
-    parts.push("");
-    parts.push("⚡ **Security**");
-    
-    if (enriched.buyTax !== null || enriched.sellTax !== null) {
-      const buyTaxStr = enriched.buyTax !== null ? `${enriched.buyTax}%` : 'N/A';
-      const sellTaxStr = enriched.sellTax !== null ? `${enriched.sellTax}%` : 'N/A';
-      parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
-    }
-    
-    if (enriched.securityData?.topHolderPercent) {
-      parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
-    }
-    
-    if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
-      parts.push(`Owner holds: ${enriched.securityData.ownerBalance.toFixed(1)}%`);
-    }
-    
-    // Add verification and honeypot checks
-    if (enriched.securityData && Object.keys(enriched.securityData).length > 0) {
-      if (enriched.securityData.isOpenSource === true) {
-        parts.push("✅ Verified contract");
-      } else if (enriched.securityData.isOpenSource === false) {
-        parts.push("⚠️ Not verified");
-      }
-      
-      if (enriched.securityData.isHoneypot === false) {
-        parts.push("✅ Not honeypot");
-      } else if (enriched.securityData.isHoneypot === true) {
-        parts.push("🔴 Honeypot detected!");
-      }
-    }
-    
-    // NEW: Dev Wallet section
-    if (lockOwner) {
-      parts.push("");
-      parts.push("👤 **Dev wallet**");
-      
-      // Add explorer link for wallet
-      const explorerUrls = {
-        1: 'https://etherscan.io/address/',
-        56: 'https://bscscan.com/address/',
-        137: 'https://polygonscan.com/address/',
-        8453: 'https://basescan.org/address/'
-      };
-      const explorerUrl = explorerUrls[chainId];
-      
-      if (explorerUrl) {
-        parts.push(`[${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}](${explorerUrl}${lockOwner})`);
-      } else {
-        parts.push(`\`${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}\``);
-      }
-      
-      // NEW: Show lock fee
-      if (lockFeeInfo) {
-        if (lockFeeInfo.paid) {
-          const feeAmount = lockFeeInfo.amount.toFixed(4);
-          let feeUSD = '';
-          if (nativePrice) {
-            const usdValue = (lockFeeInfo.amount * nativePrice).toFixed(2);
-            feeUSD = ` ($${usdValue})`;
-          }
-          parts.push(`💰 Lock Fee: ${feeAmount} ${nativeSymbol}${feeUSD}`);
-        } else if (lockFeeInfo.whitelisted) {
-          parts.push(`💰 Lock Fee: Whitelisted`);
-        }
-      }
-      
-      // Note: Lock history requires querying lock platform APIs
-      // For now, show placeholder that we can enhance later
-      parts.push(`History: Not yet tracked`);
-      
-      // Token holdings would require indexer API (future enhancement)
-      // parts.push(`Holds: X different tokens`);
-    }
-    
-    // NEW: Pattern warnings
-    const patternWarnings = detectUnusualPatterns(
-      lockedPercent ? parseFloat(lockedPercent) : null,
-      tokenData.unlockTime,
-      usdValue,
-      tokenData.isLPLock
-    );
-    
-    if (patternWarnings.length > 0) {
-      parts.push("");
-      parts.push("⚠️ **Warnings**");
-      patternWarnings.forEach(warning => parts.push(warning));
-    }
-    
+    // 2. Lock details
     parts.push("");
     parts.push("🔐 **Lock details**");
     
@@ -1515,7 +1372,166 @@ module.exports = async (req, res) => {
     parts.push(`Platform: ${source}`);
     parts.push(`Chain: ${chain}`);
     
+    // 3. Security section with emojis for owner holds
+    parts.push("");
+    parts.push("⚡ **Security**");
     
+    if (enriched.buyTax !== null || enriched.sellTax !== null) {
+      const buyTaxStr = enriched.buyTax !== null ? `${enriched.buyTax}%` : 'N/A';
+      const sellTaxStr = enriched.sellTax !== null ? `${enriched.sellTax}%` : 'N/A';
+      parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
+    }
+    
+    if (enriched.securityData?.topHolderPercent) {
+      parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
+    }
+    
+    if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
+      const ownerPercent = enriched.securityData.ownerBalance;
+      let ownerEmoji = '';
+      
+      // Add emoji based on owner holdings percentage
+      if (ownerPercent === 0) {
+        ownerEmoji = '✅';
+      } else if (ownerPercent < 5) {
+        ownerEmoji = '✅';
+      } else if (ownerPercent < 10) {
+        ownerEmoji = '⚠️';
+      } else {
+        ownerEmoji = '🔴';
+      }
+      
+      parts.push(`${ownerEmoji} Owner holds: ${ownerPercent.toFixed(1)}%`);
+    }
+    
+    // Add verification and honeypot checks
+    if (enriched.securityData && Object.keys(enriched.securityData).length > 0) {
+      if (enriched.securityData.isOpenSource === true) {
+        parts.push("✅ Verified contract");
+      } else if (enriched.securityData.isOpenSource === false) {
+        parts.push("⚠️ Not verified");
+      }
+      
+      if (enriched.securityData.isHoneypot === false) {
+        parts.push("✅ Not honeypot");
+      } else if (enriched.securityData.isHoneypot === true) {
+        parts.push("🔴 Honeypot detected!");
+      }
+    }
+    
+    // 4. Dev Wallet section
+    if (lockOwner) {
+      parts.push("");
+      parts.push("👤 **Dev wallet**");
+      
+      // Add explorer link for wallet
+      const explorerUrls = {
+        1: 'https://etherscan.io/address/',
+        56: 'https://bscscan.com/address/',
+        137: 'https://polygonscan.com/address/',
+        8453: 'https://basescan.org/address/'
+      };
+      const explorerUrl = explorerUrls[chainId];
+      
+      if (explorerUrl) {
+        parts.push(`[${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}](${explorerUrl}${lockOwner})`);
+      } else {
+        parts.push(`\`${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}\``);
+      }
+      
+      // Show lock fee
+      if (lockFeeInfo) {
+        if (lockFeeInfo.paid) {
+          const feeAmount = lockFeeInfo.amount.toFixed(4);
+          let feeUSD = '';
+          if (nativePrice) {
+            const usdValue = (lockFeeInfo.amount * nativePrice).toFixed(2);
+            feeUSD = ` ($${usdValue})`;
+          }
+          parts.push(`💰 Lock Fee: ${feeAmount} ${nativeSymbol}${feeUSD}`);
+        } else if (lockFeeInfo.whitelisted) {
+          parts.push(`💰 Lock Fee: Whitelisted`);
+        }
+      }
+      
+      // Note: Lock history requires querying lock platform APIs
+      // For now, show placeholder that we can enhance later
+      parts.push(`History: Not yet tracked`);
+      
+      // Token holdings would require indexer API (future enhancement)
+      // parts.push(`Holds: X different tokens`);
+    }
+    
+    // 5. Trading Stats section
+    parts.push("");
+    parts.push("📊 **Trading stats**");
+    
+    if (enriched.liquidity) {
+      const liqStr = enriched.liquidity >= 1000000
+        ? `$${(enriched.liquidity / 1000000).toFixed(1)}M`
+        : enriched.liquidity >= 1000
+        ? `$${(enriched.liquidity / 1000).toFixed(1)}K`
+        : `$${enriched.liquidity.toFixed(0)}`;
+      parts.push(`Liquidity: ${liqStr}`);
+    }
+    
+    // Volume 24h
+    if (enriched.volume24h) {
+      const volStr = enriched.volume24h >= 1000000
+        ? `$${(enriched.volume24h / 1000000).toFixed(1)}M`
+        : enriched.volume24h >= 1000
+        ? `$${(enriched.volume24h / 1000).toFixed(1)}K`
+        : `$${enriched.volume24h.toFixed(0)}`;
+      parts.push(`Volume 24h: ${volStr}`);
+    }
+    
+    // Buys/Sells ratio
+    if (enriched.txns24h) {
+      const buys = enriched.txns24h.buys || 0;
+      const sells = enriched.txns24h.sells || 0;
+      if (buys > 0 || sells > 0) {
+        let ratioText = '';
+        if (sells > 0) {
+          const ratio = buys / sells;
+          if (ratio > 1) {
+            ratioText = ` (${ratio.toFixed(1)}x more buys)`;
+          } else if (ratio < 1) {
+            const inverseRatio = sells / buys;
+            ratioText = ` (${inverseRatio.toFixed(1)}x more sells)`;
+          } else {
+            ratioText = ' (equal)';
+          }
+        } else if (buys > 0) {
+          ratioText = ' (only buys)';
+        }
+        parts.push(`Buys/Sells: ${buys}/${sells}${ratioText}`);
+      }
+    }
+    
+    if (enriched.totalTransactions) {
+      const txStr = enriched.totalTransactions >= 1000000
+        ? `${(enriched.totalTransactions / 1000000).toFixed(1)}M`
+        : enriched.totalTransactions >= 1000
+        ? `${(enriched.totalTransactions / 1000).toFixed(1)}K`
+        : enriched.totalTransactions.toLocaleString();
+      parts.push(`Total TXs: ${txStr}`);
+    }
+    
+    // Pattern warnings (if any)
+    const patternWarnings = detectUnusualPatterns(
+      lockedPercent ? parseFloat(lockedPercent) : null,
+      tokenData.unlockTime,
+      usdValue,
+      tokenData.isLPLock
+    );
+    
+    if (patternWarnings.length > 0) {
+      parts.push("");
+      parts.push("⚠️ **Warnings**");
+      patternWarnings.forEach(warning => parts.push(warning));
+    }
+    
+    // 6. Links
     parts.push("");
     parts.push("🔗 **Links**");
     
@@ -1526,8 +1542,8 @@ module.exports = async (req, res) => {
     parts.push(`[DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress})`);
     parts.push(`[TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
     
+    // 7. Buy
     parts.push("");
-    
     const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
     const dexInfo = getDexInfo(chainId);
     if (buyLink && dexInfo) {
@@ -1536,6 +1552,7 @@ module.exports = async (req, res) => {
       parts.push(`[🛒 Buy Now](${buyLink})`);
     }
     
+    // 8. View transaction
     parts.push("");
     parts.push(`[View Transaction](${explorerLink})`);
     
