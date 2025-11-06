@@ -120,6 +120,109 @@ async function checkIfLPToken(tokenAddress, chainId) {
   }
 }
 
+// Extract lock owner address from event data
+function extractLockOwner(lockLog, eventName, source) {
+  try {
+    const topics = lockLog.topics || [];
+    const topicsArray = topics.length > 0 ? topics : [
+      lockLog.topic0,
+      lockLog.topic1, 
+      lockLog.topic2,
+      lockLog.topic3
+    ].filter(t => t !== null && t !== undefined);
+    
+    const data = lockLog.data || "0x";
+    
+    // Team Finance V3 Deposit: owner is in topic2
+    if (source === "Team Finance" && eventName === "Deposit") {
+      return topicsArray[2] ? `0x${topicsArray[2].slice(26)}` : null;
+    }
+    
+    // Team Finance V2 onDeposit: owner is at offset 64 in data
+    if (eventName === "onDeposit") {
+      if (data.length >= 130) {
+        return `0x${data.slice(90, 130)}`;
+      }
+    }
+    
+    // UNCX V2 onNewLock: owner is at offset 128 in data
+    if (eventName === "onNewLock" && source === "UNCX") {
+      if (data.length >= 192) {
+        return `0x${data.slice(154, 194)}`;
+      }
+    }
+    
+    // UNCX V3 onLock: owner is at offset 192 in data
+    if (eventName === "onLock" && source === "UNCX") {
+      if (data.length >= 256) {
+        return `0x${data.slice(218, 258)}`;
+      }
+    }
+    
+    // Team Finance V3 DepositNFT: owner is in topic2
+    if (eventName === "DepositNFT") {
+      return topicsArray[2] ? `0x${topicsArray[2].slice(26)}` : null;
+    }
+    
+    return null;
+  } catch (err) {
+    console.error("Owner extraction error:", err.message);
+    return null;
+  }
+}
+
+// Check for unusual lock patterns
+function detectUnusualPatterns(lockedPercent, unlockTime, usdValue, isLPLock) {
+  const warnings = [];
+  
+  if (!unlockTime) return warnings;
+  
+  const now = Math.floor(Date.now() / 1000);
+  const duration = unlockTime - now;
+  const durationDays = duration / 86400;
+  
+  // Pattern 1: High % but very short duration (< 1 day)
+  if (lockedPercent && lockedPercent > 80 && durationDays < 1) {
+    warnings.push('⚠️ High % locked but only ' + formatDuration(unlockTime) + ' duration');
+  }
+  
+  // Pattern 2: Low % locked (< 5%)
+  if (lockedPercent && lockedPercent < 5) {
+    warnings.push('⚠️ Less than 5% of supply locked');
+  }
+  
+  // Pattern 3: LP lock but tiny USD value
+  if (isLPLock && usdValue && parseFloat(usdValue) < 1000) {
+    warnings.push('⚠️ LP lock value under $1,000');
+  }
+  
+  // Pattern 4: Very short duration (< 1 week) regardless of %
+  if (durationDays < 7) {
+    warnings.push('⚠️ Lock duration less than 1 week');
+  }
+  
+  // Pattern 5: Already unlocked or about to unlock
+  if (duration < 3600) { // < 1 hour
+    warnings.push('🔴 Lock expires in less than 1 hour!');
+  }
+  
+  return warnings;
+}
+
+// Get wallet's token holdings count
+async function getWalletTokenCount(walletAddress, chainId) {
+  try {
+    // Use a simple approach: check token transfer events to this address
+    // For now, we'll return null and can enhance later with proper indexer
+    // This would require an indexer API like Moralis, Alchemy, etc.
+    console.log(`Wallet token count check skipped for ${walletAddress} (requires paid API)`);
+    return null;
+  } catch (err) {
+    console.error("Wallet token count error:", err.message);
+    return null;
+  }
+}
+
 // All the helper functions from webhook.js
 function extractTokenData(lockLog, eventName, source) {
   try {
@@ -929,6 +1032,12 @@ module.exports = async (req, res) => {
       typeof value === 'bigint' ? value.toString() : value
     , 2));
     
+    // NEW: Extract lock owner address
+    const lockOwner = extractLockOwner(lockLog, eventName, source);
+    if (lockOwner) {
+      console.log(`Lock owner: ${lockOwner}`);
+    }
+    
     if (!tokenData.tokenAddress) {
       console.log("⚠️ Could not extract token address");
       await editTelegramMessage(messageId, `⚠️ Could not extract token address\n\n[View Transaction](${explorerLink})`);
@@ -1212,6 +1321,48 @@ module.exports = async (req, res) => {
       } else if (enriched.securityData.isHoneypot === true) {
         parts.push("🔴 Honeypot detected!");
       }
+    }
+    
+    // NEW: Dev Wallet section
+    if (lockOwner) {
+      parts.push("");
+      parts.push("👤 **Dev wallet**");
+      
+      // Add explorer link for wallet
+      const explorerUrls = {
+        1: 'https://etherscan.io/address/',
+        56: 'https://bscscan.com/address/',
+        137: 'https://polygonscan.com/address/',
+        8453: 'https://basescan.org/address/'
+      };
+      const explorerUrl = explorerUrls[chainId];
+      
+      if (explorerUrl) {
+        parts.push(`[${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}](${explorerUrl}${lockOwner})`);
+      } else {
+        parts.push(`\`${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}\``);
+      }
+      
+      // Note: Lock history requires querying lock platform APIs
+      // For now, show placeholder that we can enhance later
+      parts.push(`History: Not yet tracked`);
+      
+      // Token holdings would require indexer API (future enhancement)
+      // parts.push(`Holds: X different tokens`);
+    }
+    
+    // NEW: Pattern warnings
+    const patternWarnings = detectUnusualPatterns(
+      lockedPercent ? parseFloat(lockedPercent) : null,
+      tokenData.unlockTime,
+      usdValue,
+      tokenData.isLPLock
+    );
+    
+    if (patternWarnings.length > 0) {
+      parts.push("");
+      parts.push("⚠️ **Warnings**");
+      patternWarnings.forEach(warning => parts.push(warning));
     }
     
     parts.push("");
