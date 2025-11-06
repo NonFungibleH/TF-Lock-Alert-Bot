@@ -975,6 +975,34 @@ function formatUnlockDate(unlockTime) {
   return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
 
+async function getTokenCreationTime(tokenAddress, chainId) {
+  try {
+    const explorerApis = {
+      1: `https://api.etherscan.io/api?module=account&action=txlist&address=${tokenAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`,
+      56: `https://api.bscscan.com/api?module=account&action=txlist&address=${tokenAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`,
+      137: `https://api.polygonscan.com/api?module=account&action=txlist&address=${tokenAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`,
+      8453: `https://api.basescan.org/api?module=account&action=txlist&address=${tokenAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`
+    };
+    
+    const apiUrl = explorerApis[chainId];
+    if (!apiUrl) return null;
+    
+    const response = await axios.get(apiUrl, { timeout: 5000 });
+    
+    if (response.data?.status === "1" && response.data?.result?.length > 0) {
+      const firstTx = response.data.result[0];
+      const creationTime = parseInt(firstTx.timeStamp);
+      console.log(`✅ Token created at: ${new Date(creationTime * 1000).toISOString()}`);
+      return creationTime;
+    }
+    
+    return null;
+  } catch (err) {
+    console.log(`Token creation time fetch failed: ${err.message}`);
+    return null;
+  }
+}
+
 function formatContractAge(pairCreatedAt) {
   if (!pairCreatedAt) return null;
   
@@ -1178,6 +1206,14 @@ module.exports = async (req, res) => {
     
     console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}`);
     
+    // Get token creation time for token age
+    let tokenCreationTime = null;
+    try {
+      tokenCreationTime = await getTokenCreationTime(tokenData.tokenAddress, chainId);
+    } catch (err) {
+      console.error("Failed to get token creation time:", err.message);
+    }
+    
     let nativePrice = null;
     try {
       nativePrice = await getNativeTokenPrice(chainId);
@@ -1236,6 +1272,18 @@ module.exports = async (req, res) => {
     parts.push("💎 **Token info**");
     parts.push(`Token: $${tokenInfo.symbol}`);
     
+    // Show token age if available
+    const tokenAge = tokenCreationTime ? formatContractAge(tokenCreationTime * 1000) : null;
+    if (tokenAge) {
+      parts.push(`Token Age: ${tokenAge}`);
+    }
+    
+    // Show pool age if available
+    const poolAge = formatContractAge(enriched.pairCreatedAt);
+    if (poolAge) {
+      parts.push(`Pool Age: ${poolAge}`);
+    }
+    
     if (enriched.price) {
       let priceStr;
       if (enriched.price >= 1) {
@@ -1285,11 +1333,6 @@ module.exports = async (req, res) => {
       parts.push(`Pair: ${enriched.pairName}`);
     } else if (tokenData.isLPLock && pairedTokenInfo) {
       parts.push(`Pair: ${tokenInfo.symbol}/${pairedTokenInfo.symbol}`);
-    }
-    
-    const pairAge = formatContractAge(enriched.pairCreatedAt);
-    if (pairAge) {
-      parts.push(`Pool Age: ${pairAge}`);
     }
     
     // 2. Lock details
@@ -1368,6 +1411,12 @@ module.exports = async (req, res) => {
       parts.push(`Locked: ${lockedPercent}% of supply`);
     }
     
+    // Add LP lock as % of total liquidity
+    if (tokenData.isLPLock && usdValue && enriched.liquidity && parseFloat(usdValue) > 0) {
+      const lockedLiqPercent = ((parseFloat(usdValue) / enriched.liquidity) * 100).toFixed(1);
+      parts.push(`Locked Liquidity: ${lockedLiqPercent}% of pool`);
+    }
+    
     parts.push(`Duration: ${duration}`);
     parts.push(`Platform: ${source}`);
     parts.push(`Chain: ${chain}`);
@@ -1416,6 +1465,13 @@ module.exports = async (req, res) => {
         parts.push("✅ Not honeypot");
       } else if (enriched.securityData.isHoneypot === true) {
         parts.push("🔴 Honeypot detected!");
+      }
+      
+      // Contract renounced status
+      if (enriched.securityData.canTakeBackOwnership === false) {
+        parts.push("✅ Ownership renounced");
+      } else if (enriched.securityData.canTakeBackOwnership === true) {
+        parts.push("⚠️ Owner can take back control");
       }
     }
     
@@ -1542,7 +1598,12 @@ module.exports = async (req, res) => {
     parts.push(`[DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress})`);
     parts.push(`[TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`);
     
-    // 7. Buy
+    // 7. Search on X
+    parts.push("");
+    const twitterSearchUrl = `https://twitter.com/search?q=${tokenData.tokenAddress}&src=typed_query&f=live`;
+    parts.push(`[🔍 Search on X](${twitterSearchUrl})`);
+    
+    // 8. Buy
     parts.push("");
     const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
     const dexInfo = getDexInfo(chainId);
@@ -1552,7 +1613,7 @@ module.exports = async (req, res) => {
       parts.push(`[🛒 Buy Now](${buyLink})`);
     }
     
-    // 8. View transaction
+    // 9. View transaction
     parts.push("");
     parts.push(`[View Transaction](${explorerLink})`);
     
