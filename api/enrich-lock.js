@@ -56,6 +56,117 @@ const LP_TOKEN_ABI = [
   "function token1() view returns (address)"
 ];
 
+const UNISWAP_V3_NFT_ABI = [
+  "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)"
+];
+
+// Compute Uniswap V3 pool address from token0, token1, and fee
+function computePoolAddress(token0, token1, fee, chainId) {
+  // Uniswap V3 factory addresses by chain
+  const factoryAddresses = {
+    1: '0x1F98431c8aD98523631AE4a59f267346ea31F984',    // Ethereum
+    56: '0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7',   // BSC (PancakeSwap V3)
+    137: '0x1F98431c8aD98523631AE4a59f267346ea31F984',  // Polygon
+    8453: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD'  // Base
+  };
+  
+  const factory = factoryAddresses[chainId];
+  if (!factory) return null;
+  
+  // Sort tokens
+  const [tokenA, tokenB] = token0.toLowerCase() < token1.toLowerCase() 
+    ? [token0, token1] 
+    : [token1, token0];
+  
+  // Compute pool address using CREATE2
+  const initCodeHash = '0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54'; // Uniswap V3 pool init code hash
+  
+  const salt = ethers.utils.keccak256(
+    ethers.utils.defaultAbiCoder.encode(
+      ['address', 'address', 'uint24'],
+      [tokenA, tokenB, fee]
+    )
+  );
+  
+  const poolAddress = ethers.utils.getCreate2Address(factory, salt, initCodeHash);
+  
+  console.log(`✅ Computed pool address: ${poolAddress}`);
+  return poolAddress;
+}
+
+// Query Uniswap V3 NFT position to get pool and token details
+async function queryNFTPosition(nftManagerAddress, tokenId, chainId) {
+  try {
+    const rpcUrls = RPC_URLS[chainId];
+    if (!rpcUrls || rpcUrls.length === 0) return null;
+    
+    const provider = new ethers.providers.JsonRpcProvider(rpcUrls[0]);
+    const nftManager = new ethers.Contract(nftManagerAddress, UNISWAP_V3_NFT_ABI, provider);
+    
+    const position = await nftManager.positions(tokenId);
+    
+    const token0 = position.token0;
+    const token1 = position.token1;
+    const fee = position.fee;
+    const tickLower = position.tickLower;
+    const tickUpper = position.tickUpper;
+    const liquidity = position.liquidity;
+    const tokensOwed0 = position.tokensOwed0;
+    const tokensOwed1 = position.tokensOwed1;
+    
+    console.log(`✅ NFT Position: token0=${token0}, token1=${token1}, liquidity=${liquidity.toString()}, fee=${fee/10000}%`);
+    
+    // Compute pool address
+    const poolAddress = computePoolAddress(token0, token1, fee, chainId);
+    
+    // Determine primary token (non-wrapped native)
+    const wrappedNativeTokens = [
+      '0x4200000000000000000000000000000000000006',
+      '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+      '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
+      '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',
+    ];
+    
+    const token0Lower = token0.toLowerCase();
+    const token1Lower = token1.toLowerCase();
+    
+    let primaryToken, pairedToken, isPrimaryToken0;
+    if (wrappedNativeTokens.includes(token0Lower)) {
+      primaryToken = token1;
+      pairedToken = token0;
+      isPrimaryToken0 = false;
+    } else if (wrappedNativeTokens.includes(token1Lower)) {
+      primaryToken = token0;
+      pairedToken = token1;
+      isPrimaryToken0 = true;
+    } else {
+      primaryToken = token0;
+      pairedToken = token1;
+      isPrimaryToken0 = true;
+    }
+    
+    return {
+      token0,
+      token1,
+      primaryToken,
+      pairedToken,
+      isPrimaryToken0,
+      poolAddress,
+      lpPosition: {
+        liquidity,
+        feeTier: fee,
+        tickLower,
+        tickUpper,
+        tokensOwed0,
+        tokensOwed1
+      }
+    };
+  } catch (err) {
+    console.error(`Failed to query NFT position: ${err.message}`);
+    return null;
+  }
+}
+
 // Check if a token address is an LP token and extract underlying tokens
 async function checkIfLPToken(tokenAddress, chainId) {
   try {
@@ -347,15 +458,30 @@ function extractTokenData(lockLog, eventName, source) {
     }
     
     if (source === "Team Finance" && eventName === "DepositNFT") {
-      const tokenAddress = topicsArray[1] ? `0x${topicsArray[1].slice(26)}` : null;
+      const nftManagerAddress = topicsArray[1] ? `0x${topicsArray[1].slice(26)}` : null;
       if (data.length >= 258) {
+        const tokenIdHex = data.slice(2, 66);
         const amountHex = data.slice(130, 194);
         const unlockHex = data.slice(194, 258);
+        const tokenId = BigInt(`0x${tokenIdHex}`);
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
-        return { tokenAddress, amount, unlockTime, version: "V3", isLPLock: false, lpPosition: null };
+        
+        console.log(`Team Finance V3 NFT Lock: nftManager=${nftManagerAddress}, tokenId=${tokenId.toString()}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
+        
+        // This is a V3 LP position NFT - needs on-chain query to get position details
+        return { 
+          tokenAddress: nftManagerAddress, 
+          tokenId,
+          amount, 
+          unlockTime, 
+          version: "V3", 
+          isLPLock: true, 
+          lpPosition: null,
+          needsNFTPositionQuery: true  // Flag to query NFT position data
+        };
       }
-      return { tokenAddress, amount: null, unlockTime: null, version: "V3", isLPLock: false, lpPosition: null };
+      return { tokenAddress: null, amount: null, unlockTime: null, version: "V3", isLPLock: false, lpPosition: null };
     }
     
     if (eventName === "DepositNFT") {
@@ -1142,7 +1268,27 @@ module.exports = async (req, res) => {
       delete tokenData.needsLPCheck;
     }
     
-    const isNFTLock = eventName === "DepositNFT" && source === "Team Finance";
+    // NEW: Query NFT position for Team Finance V3 NFT locks
+    if (tokenData.needsNFTPositionQuery) {
+      console.log(`Querying NFT position for token ID ${tokenData.tokenId}...`);
+      const nftPosition = await queryNFTPosition(tokenData.tokenAddress, tokenData.tokenId, chainId);
+      
+      if (nftPosition) {
+        console.log(`✅ NFT position queried successfully`);
+        tokenData.tokenAddress = nftPosition.primaryToken;
+        tokenData.token1 = nftPosition.pairedToken;
+        tokenData.isPrimaryToken0 = nftPosition.isPrimaryToken0;
+        tokenData.lpPosition = nftPosition.lpPosition;
+        tokenData.poolAddress = nftPosition.poolAddress; // Use computed pool address
+      } else {
+        console.log(`⚠️ Could not query NFT position`);
+      }
+      
+      delete tokenData.needsNFTPositionQuery;
+      delete tokenData.tokenId;
+    }
+    
+    const isNFTLock = eventName === "DepositNFT" && source === "Team Finance" && !tokenData.tokenAddress;
     
     if (isNFTLock) {
       console.log("⚠️ NFT Position lock detected - skipping for now");
