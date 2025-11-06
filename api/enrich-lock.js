@@ -765,24 +765,24 @@ function calculateTokenAmountsFromPosition(liquidity, tickLower, tickUpper, curr
       // Position is entirely in token0
       const sqrtRatioA = getSqrtRatioAtTick(tickLower);
       const sqrtRatioB = getSqrtRatioAtTick(tickUpper);
-      amount0 = (liquidityBN * (sqrtRatioB - sqrtRatioA)) / sqrtRatioA / sqrtRatioB * (BigInt(2) ** BigInt(96));
+      amount0 = (liquidityBN * (sqrtRatioB - sqrtRatioA)) / (BigInt(2) ** BigInt(96)) / sqrtRatioA;
     } else if (currentTick >= tickUpper) {
       // Position is entirely in token1
       const sqrtRatioA = getSqrtRatioAtTick(tickLower);
       const sqrtRatioB = getSqrtRatioAtTick(tickUpper);
-      amount1 = liquidityBN * (sqrtRatioB - sqrtRatioA);
+      amount1 = liquidityBN * (sqrtRatioB - sqrtRatioA) / (BigInt(2) ** BigInt(96));
     } else {
       // Position is active (in range)
       const sqrtRatioA = getSqrtRatioAtTick(tickLower);
       const sqrtRatioB = getSqrtRatioAtTick(tickUpper);
       const sqrtRatioCurrent = getSqrtRatioAtTick(currentTick);
       
-      amount0 = (liquidityBN * (sqrtRatioB - sqrtRatioCurrent)) / sqrtRatioCurrent / sqrtRatioB * (BigInt(2) ** BigInt(96));
-      amount1 = liquidityBN * (sqrtRatioCurrent - sqrtRatioA);
+      amount0 = (liquidityBN * (sqrtRatioB - sqrtRatioCurrent)) / (BigInt(2) ** BigInt(96)) / sqrtRatioCurrent;
+      amount1 = liquidityBN * (sqrtRatioCurrent - sqrtRatioA) / (BigInt(2) ** BigInt(96));
     }
     
     // Convert to human readable
-    const amount0Readable = Number(amount0) / Math.pow(10, decimals0) / Math.pow(2, 96);
+    const amount0Readable = Number(amount0) / Math.pow(10, decimals0);
     const amount1Readable = Number(amount1) / Math.pow(10, decimals1);
     
     console.log(`✅ Calculated amounts: token0=${amount0Readable}, token1=${amount1Readable}`);
@@ -1024,6 +1024,30 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
       source: null
     };
   }
+}
+
+function formatPercentage(percent) {
+  if (percent === null || percent === undefined) return null;
+  
+  const num = parseFloat(percent);
+  
+  // For very large percentages (>1000%), just show ">999%"
+  if (num > 999) {
+    return ">999";
+  }
+  
+  // For percentages >= 100, show no decimals
+  if (num >= 100) {
+    return num.toFixed(0);
+  }
+  
+  // For percentages >= 10, show 1 decimal
+  if (num >= 10) {
+    return num.toFixed(1);
+  }
+  
+  // For percentages < 10, show 2 decimals
+  return num.toFixed(2);
 }
 
 function formatDuration(unlockTime) {
@@ -1384,7 +1408,8 @@ module.exports = async (req, res) => {
       // Calculate % of supply locked
       if (tokenInfo.totalSupply && primaryTokenAmount) {
         const totalSupply = Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals);
-        lockedPercent = ((primaryTokenAmount / totalSupply) * 100).toFixed(2);
+        const rawPercent = (primaryTokenAmount / totalSupply) * 100;
+        lockedPercent = formatPercentage(rawPercent);
       }
       
       // Calculate USD value if we have price
@@ -1393,9 +1418,11 @@ module.exports = async (req, res) => {
       }
     } else if (amount) {
       // For regular token locks
-      lockedPercent = tokenInfo.totalSupply 
-        ? ((amount / (Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals))) * 100).toFixed(2)
-        : null;
+      if (tokenInfo.totalSupply) {
+        const totalSupply = Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals);
+        const rawPercent = (amount / totalSupply) * 100;
+        lockedPercent = formatPercentage(rawPercent);
+      }
       
       usdValue = enriched.price 
         ? (amount * enriched.price).toFixed(2)
@@ -1481,6 +1508,30 @@ module.exports = async (req, res) => {
       parts.push(`Pair: ${tokenInfo.symbol}/${pairedTokenInfo.symbol}`);
     }
     
+    // Show pool liquidity in Token info for LP locks
+    if (tokenData.isLPLock && enriched.liquidity) {
+      const liqStr = enriched.liquidity >= 1000000
+        ? `$${(enriched.liquidity / 1000000).toFixed(1)}M`
+        : enriched.liquidity >= 1000
+        ? `$${(enriched.liquidity / 1000).toFixed(1)}K`
+        : `$${enriched.liquidity.toFixed(0)}`;
+      parts.push(`Pool Liquidity: ${liqStr}`);
+    }
+    
+    // Show native token amount in pool for LP locks
+    if (tokenData.isLPLock && enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0) {
+      const nativeStr = enriched.nativeTokenAmount >= 1 
+        ? enriched.nativeTokenAmount.toFixed(2)
+        : enriched.nativeTokenAmount.toFixed(4);
+      
+      if (nativePrice) {
+        const nativeUsdValue = (enriched.nativeTokenAmount * nativePrice).toFixed(2);
+        parts.push(`Native in Pool: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
+      } else {
+        parts.push(`Native in Pool: ${nativeStr} ${nativeSymbol}`);
+      }
+    }
+    
     // 2. Lock details
     parts.push("");
     parts.push("🔐 **Lock details**");
@@ -1540,26 +1591,14 @@ module.exports = async (req, res) => {
       parts.push(`Amount: LP Position (V3)`);
     }
     
-    if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0) {
-      const nativeStr = enriched.nativeTokenAmount >= 1 
-        ? enriched.nativeTokenAmount.toFixed(2)
-        : enriched.nativeTokenAmount.toFixed(4);
-      
-      if (nativePrice) {
-        const nativeUsdValue = (enriched.nativeTokenAmount * nativePrice).toFixed(2);
-        parts.push(`Native: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
-      } else {
-        parts.push(`Native: ${nativeStr} ${nativeSymbol}`);
-      }
-    }
-    
     if (lockedPercent) {
       parts.push(`Locked: ${lockedPercent}% of supply`);
     }
     
     // Add LP lock as % of total liquidity
     if (tokenData.isLPLock && usdValue && enriched.liquidity && parseFloat(usdValue) > 0) {
-      const lockedLiqPercent = ((parseFloat(usdValue) / enriched.liquidity) * 100).toFixed(1);
+      const rawLiqPercent = (parseFloat(usdValue) / enriched.liquidity) * 100;
+      const lockedLiqPercent = formatPercentage(rawLiqPercent);
       parts.push(`Locked Liquidity: ${lockedLiqPercent}% of pool`);
     }
     
@@ -1668,7 +1707,8 @@ module.exports = async (req, res) => {
     parts.push("");
     parts.push("📊 **Trading stats**");
     
-    if (enriched.liquidity) {
+    // Only show liquidity here for non-LP locks (for LP locks it's already in Token info)
+    if (!tokenData.isLPLock && enriched.liquidity) {
       const liqStr = enriched.liquidity >= 1000000
         ? `$${(enriched.liquidity / 1000000).toFixed(1)}M`
         : enriched.liquidity >= 1000
