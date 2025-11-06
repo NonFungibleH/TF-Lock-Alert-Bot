@@ -51,6 +51,75 @@ const POOL_ABI = [
   "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)"
 ];
 
+const LP_TOKEN_ABI = [
+  "function token0() view returns (address)",
+  "function token1() view returns (address)"
+];
+
+// Check if a token address is an LP token and extract underlying tokens
+async function checkIfLPToken(tokenAddress, chainId) {
+  try {
+    const rpcUrls = RPC_URLS[chainId];
+    if (!rpcUrls || rpcUrls.length === 0) return null;
+    
+    const provider = new ethers.providers.JsonRpcProvider(rpcUrls[0]);
+    const contract = new ethers.Contract(tokenAddress, LP_TOKEN_ABI, provider);
+    
+    try {
+      // Try to call token0() and token1() - if they exist, it's an LP token
+      const [token0, token1] = await Promise.all([
+        contract.token0(),
+        contract.token1()
+      ]);
+      
+      console.log(`✅ LP Token detected: token0=${token0}, token1=${token1}`);
+      
+      // Determine primary token (non-wrapped native)
+      const wrappedNativeTokens = [
+        '0x4200000000000000000000000000000000000006',
+        '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+        '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
+        '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',
+      ];
+      
+      const token0Lower = token0.toLowerCase();
+      const token1Lower = token1.toLowerCase();
+      
+      let primaryToken, pairedToken, isPrimaryToken0;
+      if (wrappedNativeTokens.includes(token0Lower)) {
+        primaryToken = token1;
+        pairedToken = token0;
+        isPrimaryToken0 = false;
+      } else if (wrappedNativeTokens.includes(token1Lower)) {
+        primaryToken = token0;
+        pairedToken = token1;
+        isPrimaryToken0 = true;
+      } else {
+        // Neither is wrapped native, default to token0
+        primaryToken = token0;
+        pairedToken = token1;
+        isPrimaryToken0 = true;
+      }
+      
+      return {
+        isLP: true,
+        token0,
+        token1,
+        primaryToken,
+        pairedToken,
+        isPrimaryToken0
+      };
+    } catch (err) {
+      // If token0() or token1() don't exist, it's not an LP token
+      console.log(`Not an LP token: ${err.message}`);
+      return { isLP: false };
+    }
+  } catch (err) {
+    console.error(`Error checking if LP token: ${err.message}`);
+    return { isLP: false };
+  }
+}
+
 // All the helper functions from webhook.js
 function extractTokenData(lockLog, eventName, source) {
   try {
@@ -85,7 +154,20 @@ function extractTokenData(lockLog, eventName, source) {
         const unlockHex = data.slice(258, 322);
         const amount = BigInt(`0x${amountHex}`);
         const unlockTime = parseInt(unlockHex, 16);
-        return { tokenAddress, amount, unlockTime, version: "V2", isLPLock: false, lpPosition: null };
+        
+        // NEW: Check if this is an LP token by trying to fetch token0/token1
+        // LP tokens have token0() and token1() functions, regular tokens don't
+        console.log(`onDeposit: Checking if ${tokenAddress} is an LP token...`);
+        
+        return { 
+          tokenAddress, 
+          amount, 
+          unlockTime, 
+          version: "V2", 
+          isLPLock: false,  // Will be updated after checking if it's LP
+          lpPosition: null,
+          needsLPCheck: true  // Flag to check if this is an LP token
+        };
       }
       return { tokenAddress: null, amount: null, unlockTime: null, version: "V2", isLPLock: false, lpPosition: null };
     }
@@ -828,6 +910,20 @@ module.exports = async (req, res) => {
       console.log("⚠️ Could not extract token address");
       await editTelegramMessage(messageId, `⚠️ Could not extract token address\n\n[View Transaction](${explorerLink})`);
       return res.status(200).json({ status: "failed", reason: "no_token_address" });
+    }
+    
+    // NEW: Check if this is an LP token (for Team Finance V2 onDeposit events)
+    if (tokenData.needsLPCheck) {
+      const lpCheck = await checkIfLPToken(tokenData.tokenAddress, chainId);
+      if (lpCheck.isLP) {
+        console.log(`✅ Detected LP token in onDeposit event`);
+        tokenData.isLPLock = true;
+        tokenData.tokenAddress = lpCheck.primaryToken;
+        tokenData.token1 = lpCheck.pairedToken;
+        tokenData.isPrimaryToken0 = lpCheck.isPrimaryToken0;
+        tokenData.poolAddress = tokenData.tokenAddress; // Use original LP address as pool
+      }
+      delete tokenData.needsLPCheck;
     }
     
     const isNFTLock = eventName === "DepositNFT" && source === "Team Finance";
