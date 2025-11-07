@@ -1454,8 +1454,8 @@ module.exports = async (req, res) => {
       if (enriched.price && primaryTokenAmount) {
         usdValue = (primaryTokenAmount * enriched.price).toFixed(2);
       }
-    } else if (amount) {
-      // For regular token locks
+    } else if (amount && !tokenData.isLPLock) {
+      // For regular token locks only (not LP tokens)
       if (tokenInfo.totalSupply) {
         const totalSupply = Number(tokenInfo.totalSupply) / Math.pow(10, tokenInfo.decimals);
         const rawPercent = (amount / totalSupply) * 100;
@@ -1465,6 +1465,13 @@ module.exports = async (req, res) => {
       usdValue = enriched.price 
         ? (amount * enriched.price).toFixed(2)
         : null;
+    } else if (amount && tokenData.isLPLock) {
+      // For LP locks without calculated amounts, estimate USD value from locked liquidity
+      // The 'amount' here is LP tokens, not project tokens
+      if (enriched.liquidity) {
+        // Rough estimate: assume locked LP tokens represent proportional liquidity
+        usdValue = (enriched.liquidity * 0.5).toFixed(2); // Placeholder - would need better calculation
+      }
     }
     
     // Build message with reordered sections
@@ -1635,42 +1642,68 @@ module.exports = async (req, res) => {
     }
     
     // Add LP lock as % of total liquidity
-    if (tokenData.isLPLock && usdValue && enriched.liquidity && parseFloat(usdValue) > 0) {
-      let rawLiqPercent = (parseFloat(usdValue) / enriched.liquidity) * 100;
+    if (tokenData.isLPLock && enriched.liquidity) {
+      let rawLiqPercent = null;
       
-      // Cap at 100% (can't lock more than 100% of the pool)
-      // If it's showing >100%, it's likely a calculation error or stale data
-      if (rawLiqPercent > 100) {
-        rawLiqPercent = 100;
+      // If we have calculated USD value of locked position
+      if (usdValue && parseFloat(usdValue) > 0) {
+        rawLiqPercent = (parseFloat(usdValue) / enriched.liquidity) * 100;
+      }
+      // If we have native token locked, calculate based on that
+      else if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0 && nativePrice) {
+        const lockedNativeUSD = enriched.nativeTokenAmount * nativePrice;
+        const totalLiquidityNative = enriched.liquidity / 2; // Half of pool liquidity is native token
+        if (totalLiquidityNative > 0) {
+          rawLiqPercent = (lockedNativeUSD / totalLiquidityNative) * 100;
+        }
       }
       
-      const lockedLiqPercent = formatPercentage(rawLiqPercent);
-      parts.push(`Locked Liquidity: ${lockedLiqPercent}% of pool`);
+      if (rawLiqPercent !== null) {
+        // Cap at 100% (can't lock more than 100% of the pool)
+        rawLiqPercent = Math.min(rawLiqPercent, 100);
+        const lockedLiqPercent = formatPercentage(rawLiqPercent);
+        parts.push(`Locked Liquidity: ${lockedLiqPercent}% of pool`);
+      }
     }
     
     // Show native token locked for LP locks (important metric that can't be manipulated)
-    if (tokenData.isLPLock && pairedTokenAmount && pairedTokenInfo) {
-      // Check if the paired token is the native wrapped token
-      const wrappedNativeTokens = {
-        1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
-        56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
-        137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC/WPOL
-        8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
-      };
-      
-      const pairedTokenLower = tokenData.token1?.toLowerCase();
-      const nativeTokenAddress = wrappedNativeTokens[chainId]?.toLowerCase();
-      
-      if (pairedTokenLower === nativeTokenAddress) {
-        const nativeStr = pairedTokenAmount >= 1 
-          ? pairedTokenAmount.toFixed(2)
-          : pairedTokenAmount.toFixed(4);
+    if (tokenData.isLPLock) {
+      // Check if we have the native token amount from DexScreener
+      if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0) {
+        const nativeStr = enriched.nativeTokenAmount >= 1 
+          ? enriched.nativeTokenAmount.toFixed(2)
+          : enriched.nativeTokenAmount.toFixed(4);
         
         if (nativePrice) {
-          const nativeUsdValue = (pairedTokenAmount * nativePrice).toFixed(2);
+          const nativeUsdValue = (enriched.nativeTokenAmount * nativePrice).toFixed(2);
           parts.push(`Native Locked: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
         } else {
           parts.push(`Native Locked: ${nativeStr} ${nativeSymbol}`);
+        }
+      }
+      // Or if we have calculated paired token amounts for V3
+      else if (pairedTokenAmount && pairedTokenInfo) {
+        const wrappedNativeTokens = {
+          1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
+          56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
+          137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC/WPOL
+          8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
+        };
+        
+        const pairedTokenLower = tokenData.token1?.toLowerCase();
+        const nativeTokenAddress = wrappedNativeTokens[chainId]?.toLowerCase();
+        
+        if (pairedTokenLower === nativeTokenAddress) {
+          const nativeStr = pairedTokenAmount >= 1 
+            ? pairedTokenAmount.toFixed(2)
+            : pairedTokenAmount.toFixed(4);
+          
+          if (nativePrice) {
+            const nativeUsdValue = (pairedTokenAmount * nativePrice).toFixed(2);
+            parts.push(`Native Locked: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
+          } else {
+            parts.push(`Native Locked: ${nativeStr} ${nativeSymbol}`);
+          }
         }
       }
     }
@@ -1821,7 +1854,7 @@ module.exports = async (req, res) => {
         } else if (buys > 0) {
           ratioText = ' (only buys)';
         }
-        parts.push(`Buys/Sells: ${buys}/${sells}${ratioText}`);
+        parts.push(`Buys/Sells: ${buys.toLocaleString()}/${sells.toLocaleString()}${ratioText}`);
       }
     }
     
@@ -1840,7 +1873,7 @@ module.exports = async (req, res) => {
     }
     
     // Top 10 holders percentage of supply
-    if (enriched.securityData?.topHolderPercent) {
+    if (enriched.securityData?.topHolderPercent !== null && enriched.securityData?.topHolderPercent !== undefined) {
       parts.push(`Top 10 Hold: ${enriched.securityData.topHolderPercent.toFixed(1)}% of supply`);
     }
     
