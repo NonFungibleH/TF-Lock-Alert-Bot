@@ -1080,41 +1080,62 @@ function calculateOpportunityScore(data) {
   let score = 0;
   const breakdown = {};
   
+  // === CRITICAL FAILURES - Auto-cap score at 20 ===
+  const nativeLockedUSD = (nativeLocked && nativePrice) ? (nativeLocked * nativePrice) : 0;
+  const ageMinutes = tokenAgeMinutes || poolAgeMinutes || 0;
+  const totalTxns = buysSells ? ((buysSells.buys || 0) + (buysSells.sells || 0)) : 0;
+  
+  let criticalFailure = false;
+  
+  // Critical: Less than $500 locked
+  if (nativeLockedUSD < 500) {
+    criticalFailure = true;
+  }
+  
+  // Critical: No volume and very new
+  if (volume24h === 0 && ageMinutes < 1440) { // Less than 1 day old with $0 volume
+    criticalFailure = true;
+  }
+  
+  // Critical: Less than 10 transactions
+  if (totalTxns < 10) {
+    criticalFailure = true;
+  }
+  
   // === LOCK QUALITY (40 points) ===
   let lockQuality = 0;
   
-  // Lock duration (0-15 pts)
+  // Lock duration (0-10 pts) - REDUCED from 15
   if (unlockTime) {
     const now = Math.floor(Date.now() / 1000);
     const durationDays = (unlockTime - now) / 86400;
     
-    if (durationDays >= 365) lockQuality += 15;
-    else if (durationDays >= 180) lockQuality += 12;
-    else if (durationDays >= 90) lockQuality += 9;
-    else if (durationDays >= 30) lockQuality += 6;
-    else if (durationDays >= 7) lockQuality += 3;
+    if (durationDays >= 730) lockQuality += 10; // 2+ years
+    else if (durationDays >= 365) lockQuality += 8;
+    else if (durationDays >= 180) lockQuality += 6;
+    else if (durationDays >= 90) lockQuality += 4;
+    else if (durationDays >= 30) lockQuality += 2;
     else lockQuality += 1;
   }
   
-  // % of liquidity locked (0-15 pts)
+  // % of liquidity locked (0-10 pts) - REDUCED from 15
   if (lockedPercent) {
     const percent = parseFloat(lockedPercent);
-    if (percent >= 90) lockQuality += 15;
-    else if (percent >= 75) lockQuality += 12;
-    else if (percent >= 50) lockQuality += 9;
-    else if (percent >= 25) lockQuality += 6;
-    else lockQuality += 3;
+    if (percent >= 90) lockQuality += 10;
+    else if (percent >= 75) lockQuality += 8;
+    else if (percent >= 50) lockQuality += 6;
+    else if (percent >= 25) lockQuality += 4;
+    else lockQuality += 2;
   }
   
-  // Native token locked amount (0-10 pts)
-  if (nativeLocked && nativePrice) {
-    const usdValue = nativeLocked * nativePrice;
-    if (usdValue >= 100000) lockQuality += 10;
-    else if (usdValue >= 50000) lockQuality += 8;
-    else if (usdValue >= 25000) lockQuality += 6;
-    else if (usdValue >= 10000) lockQuality += 4;
-    else if (usdValue >= 1000) lockQuality += 2;
-  }
+  // Native token locked amount (0-20 pts) - INCREASED from 10 - MOST IMPORTANT
+  if (nativeLockedUSD >= 100000) lockQuality += 20;
+  else if (nativeLockedUSD >= 50000) lockQuality += 16;
+  else if (nativeLockedUSD >= 25000) lockQuality += 12;
+  else if (nativeLockedUSD >= 10000) lockQuality += 8;
+  else if (nativeLockedUSD >= 5000) lockQuality += 4;
+  else if (nativeLockedUSD >= 1000) lockQuality += 2;
+  else lockQuality += 0; // Less than $1k = 0 points
   
   breakdown.lockQuality = lockQuality;
   score += lockQuality;
@@ -1123,6 +1144,8 @@ function calculateOpportunityScore(data) {
   let contractSafety = 0;
   
   if (isVerified === true) contractSafety += 10;
+  else contractSafety += 0; // Not verified = 0 points (was giving partial credit)
+  
   if (isRenounced === true) contractSafety += 10;
   if (isHoneypot === false) contractSafety += 5;
   
@@ -1149,6 +1172,7 @@ function calculateOpportunityScore(data) {
     else if (holderCount >= 250) distribution += 6;
     else if (holderCount >= 100) distribution += 4;
     else if (holderCount >= 50) distribution += 2;
+    else distribution += 0; // Less than 50 holders = 0 points
   }
   
   breakdown.distribution = distribution;
@@ -1157,20 +1181,14 @@ function calculateOpportunityScore(data) {
   // === MARKET METRICS (15 points) ===
   let marketMetrics = 0;
   
-  // Token age (0-5 pts) - older is more established
-  if (tokenAgeMinutes) {
-    const ageDays = tokenAgeMinutes / (60 * 24);
-    if (ageDays >= 365) marketMetrics += 5;
-    else if (ageDays >= 90) marketMetrics += 4;
-    else if (ageDays >= 30) marketMetrics += 3;
-    else if (ageDays >= 7) marketMetrics += 2;
-    else if (ageDays >= 1) marketMetrics += 1;
-  } else if (poolAgeMinutes) {
-    // Fallback to pool age if token age unavailable
-    const ageDays = poolAgeMinutes / (60 * 24);
-    if (ageDays >= 30) marketMetrics += 3;
-    else if (ageDays >= 7) marketMetrics += 2;
-    else if (ageDays >= 1) marketMetrics += 1;
+  // Token age (0-4 pts) - REDUCED from 5
+  if (ageMinutes) {
+    const ageDays = ageMinutes / (60 * 24);
+    if (ageDays >= 365) marketMetrics += 4;
+    else if (ageDays >= 90) marketMetrics += 3;
+    else if (ageDays >= 30) marketMetrics += 2;
+    else if (ageDays >= 7) marketMetrics += 1;
+    else marketMetrics += 0; // Less than 7 days = 0 points
   }
   
   // Buy/sell ratio (0-4 pts)
@@ -1182,12 +1200,16 @@ function calculateOpportunityScore(data) {
     else if (ratio >= 1) marketMetrics += 1;
   }
   
-  // Volume relative to liquidity (0-3 pts)
+  // Volume relative to liquidity (0-4 pts) - STRICTER
   if (volume24h && liquidity && liquidity > 0) {
     const volumeRatio = volume24h / liquidity;
-    if (volumeRatio >= 1) marketMetrics += 3;
-    else if (volumeRatio >= 0.5) marketMetrics += 2;
+    if (volumeRatio >= 1) marketMetrics += 4;
+    else if (volumeRatio >= 0.5) marketMetrics += 3;
+    else if (volumeRatio >= 0.25) marketMetrics += 2;
     else if (volumeRatio >= 0.1) marketMetrics += 1;
+    else marketMetrics += 0; // Less than 10% = 0 points
+  } else if (volume24h === 0) {
+    marketMetrics += 0; // Zero volume = 0 points
   }
   
   // Activity level - makers count (0-3 pts)
@@ -1196,12 +1218,18 @@ function calculateOpportunityScore(data) {
     if (totalMakers >= 500) marketMetrics += 3;
     else if (totalMakers >= 200) marketMetrics += 2;
     else if (totalMakers >= 50) marketMetrics += 1;
+    else marketMetrics += 0; // Less than 50 makers = 0 points
   }
   
   breakdown.marketMetrics = marketMetrics;
   score += marketMetrics;
   
-  return { score, breakdown };
+  // === APPLY CRITICAL FAILURE CAP ===
+  if (criticalFailure && score > 20) {
+    score = Math.min(score, 20);
+  }
+  
+  return { score, breakdown, criticalFailure };
 }
 
 // Generate smart AI-like analysis
@@ -2217,7 +2245,7 @@ module.exports = async (req, res) => {
     
     // 5. Trading Stats section
     parts.push("");
-    parts.push("📊 **Trading stats**");
+    parts.push("📊 **Trading stats**);
     
     // Only show liquidity here for non-LP locks (for LP locks it's already in Token info)
     if (!tokenData.isLPLock && enriched.liquidity) {
@@ -2286,18 +2314,9 @@ module.exports = async (req, res) => {
     if (enriched.makers24h) {
       const buyers = enriched.makers24h.buyers || 0;
       const sellers = enriched.makers24h.sellers || 0;
-      const totalMakers = buyers + sellers;
       
-      if (totalMakers > 0) {
-        parts.push(`Makers: ${totalMakers.toLocaleString()}`);
-      }
-      
-      if (buyers > 0) {
-        parts.push(`Buyers: ${buyers.toLocaleString()}`);
-      }
-      
-      if (sellers > 0) {
-        parts.push(`Sellers: ${sellers.toLocaleString()}`);
+      if (buyers > 0 || sellers > 0) {
+        parts.push(`Makers: ${buyers.toLocaleString()} buyers / ${sellers.toLocaleString()} sellers`);
       }
     }
     
@@ -2320,6 +2339,13 @@ module.exports = async (req, res) => {
         enriched.securityData?.topHolderPercent !== undefined && 
         enriched.securityData.topHolderPercent > 0) {
       parts.push(`Top 10 Hold: ${enriched.securityData.topHolderPercent.toFixed(1)}% of supply`);
+    }
+    
+    // Buy/Sell Tax
+    if (enriched.buyTax !== null || enriched.sellTax !== null) {
+      const buyTaxStr = enriched.buyTax !== null ? `${enriched.buyTax}%` : 'N/A';
+      const sellTaxStr = enriched.sellTax !== null ? `${enriched.sellTax}%` : 'N/A';
+      parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
     }
     
     // Pattern warnings (if any)
