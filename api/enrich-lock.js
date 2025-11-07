@@ -2373,13 +2373,28 @@ module.exports = async (req, res) => {
     ];
     parts.push(links.join(' | '));
     
-    // 7. Search on X
-    parts.push("");
+    // Search on X - no line break
     const twitterSearchUrl = `https://twitter.com/search?q=${tokenData.tokenAddress}&src=typed_query&f=live`;
     parts.push(`[🔍 Search on X](${twitterSearchUrl})`);
     
-    // 8. Buy
+    // 7. Snipe section with bot links and DEX
     parts.push("");
+    parts.push("⚡ **Snipe**");
+    
+    // Generate bot links
+    const unibotLink = `https://t.me/unibotsniper_bot?start=${tokenData.tokenAddress}`;
+    const bananaLink = `https://t.me/BananaGunSniper_bot?start=snipe-${tokenData.tokenAddress}`;
+    const maestroLink = `https://t.me/MaestroSniperBot?start=${tokenData.tokenAddress}`;
+    
+    // Bot links on one line
+    const botLinks = [
+      `[Unibot](${unibotLink})`,
+      `[Banana Gun](${bananaLink})`,
+      `[Maestro](${maestroLink})`
+    ];
+    parts.push(botLinks.join(' | '));
+    
+    // DEX buy link
     const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
     const dexInfo = getDexInfo(chainId);
     if (buyLink && dexInfo) {
@@ -2388,7 +2403,7 @@ module.exports = async (req, res) => {
       parts.push(`[🛒 Buy Now](${buyLink})`);
     }
     
-    // 9. View transaction
+    // 8. View transaction
     parts.push("");
     parts.push(`[View Transaction](${explorerLink})`);
     
