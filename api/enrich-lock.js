@@ -1153,6 +1153,34 @@ async function getTokenCreationTime(tokenAddress, chainId) {
   }
 }
 
+async function getWalletCreationTime(walletAddress, chainId) {
+  try {
+    const explorerApis = {
+      1: `https://api.etherscan.io/api?module=account&action=txlist&address=${walletAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`,
+      56: `https://api.bscscan.com/api?module=account&action=txlist&address=${walletAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`,
+      137: `https://api.polygonscan.com/api?module=account&action=txlist&address=${walletAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`,
+      8453: `https://api.basescan.org/api?module=account&action=txlist&address=${walletAddress}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc`
+    };
+    
+    const apiUrl = explorerApis[chainId];
+    if (!apiUrl) return null;
+    
+    const response = await axios.get(apiUrl, { timeout: 5000 });
+    
+    if (response.data?.status === "1" && response.data?.result?.length > 0) {
+      const firstTx = response.data.result[0];
+      const creationTime = parseInt(firstTx.timeStamp);
+      console.log(`✅ Wallet first tx at: ${new Date(creationTime * 1000).toISOString()}`);
+      return creationTime;
+    }
+    
+    return null;
+  } catch (err) {
+    console.log(`Wallet creation time fetch failed: ${err.message}`);
+    return null;
+  }
+}
+
 function formatContractAge(pairCreatedAt) {
   if (!pairCreatedAt) return null;
   
@@ -1384,6 +1412,16 @@ module.exports = async (req, res) => {
       console.error("Failed to get token creation time:", err.message);
     }
     
+    // Get wallet creation time for wallet age
+    let walletCreationTime = null;
+    if (lockOwner) {
+      try {
+        walletCreationTime = await getWalletCreationTime(lockOwner, chainId);
+      } catch (err) {
+        console.error("Failed to get wallet creation time:", err.message);
+      }
+    }
+    
     let nativePrice = null;
     try {
       nativePrice = await getNativeTokenPrice(chainId);
@@ -1468,21 +1506,31 @@ module.exports = async (req, res) => {
       }
       parts.push(`Price: $${priceStr}`);
       
-      // Price changes on same line
+      // Price changes - only show what makes sense based on pool age
+      const poolAgeMs = enriched.pairCreatedAt ? (Date.now() - new Date(enriched.pairCreatedAt).getTime()) : null;
+      const poolAgeMinutes = poolAgeMs ? poolAgeMs / (1000 * 60) : null;
+      
       if (enriched.priceChange5m !== null || enriched.priceChange1h !== null || enriched.priceChange6h !== null) {
         const changes = [];
+        
+        // Always show 5m if available
         if (enriched.priceChange5m !== null) {
           const sign = enriched.priceChange5m >= 0 ? '+' : '';
           changes.push(`5m: ${sign}${enriched.priceChange5m.toFixed(1)}%`);
         }
-        if (enriched.priceChange1h !== null) {
+        
+        // Only show 1h if pool is older than 1 hour
+        if (enriched.priceChange1h !== null && poolAgeMinutes && poolAgeMinutes >= 60) {
           const sign = enriched.priceChange1h >= 0 ? '+' : '';
           changes.push(`1h: ${sign}${enriched.priceChange1h.toFixed(1)}%`);
         }
-        if (enriched.priceChange6h !== null) {
+        
+        // Only show 6h if pool is older than 6 hours
+        if (enriched.priceChange6h !== null && poolAgeMinutes && poolAgeMinutes >= 360) {
           const sign = enriched.priceChange6h >= 0 ? '+' : '';
           changes.push(`6h: ${sign}${enriched.priceChange6h.toFixed(1)}%`);
         }
+        
         if (changes.length > 0) {
           parts.push(changes.join(' | '));
         }
@@ -1561,9 +1609,6 @@ module.exports = async (req, res) => {
       } else {
         parts.push(`Amount: ${primaryAmountStr} ${tokenInfo.symbol} + ${pairedAmountStr} ${pairedTokenInfo.symbol}`);
       }
-    } else if (tokenData.isLPLock && pairedTokenInfo) {
-      // LP lock but couldn't calculate amounts - show basic info
-      parts.push(`Amount: LP Position (${tokenInfo.symbol}/${pairedTokenInfo.symbol})`);
     } else if (amount) {
       let amountStr;
       if (amount >= 1000000) {
@@ -1583,8 +1628,6 @@ module.exports = async (req, res) => {
       } else {
         parts.push(`Amount: ${amountStr} tokens`);
       }
-    } else if (tokenData.isLPLock) {
-      parts.push(`Amount: LP Position (V3)`);
     }
     
     if (lockedPercent) {
@@ -1593,9 +1636,43 @@ module.exports = async (req, res) => {
     
     // Add LP lock as % of total liquidity
     if (tokenData.isLPLock && usdValue && enriched.liquidity && parseFloat(usdValue) > 0) {
-      const rawLiqPercent = (parseFloat(usdValue) / enriched.liquidity) * 100;
+      let rawLiqPercent = (parseFloat(usdValue) / enriched.liquidity) * 100;
+      
+      // Cap at 100% (can't lock more than 100% of the pool)
+      // If it's showing >100%, it's likely a calculation error or stale data
+      if (rawLiqPercent > 100) {
+        rawLiqPercent = 100;
+      }
+      
       const lockedLiqPercent = formatPercentage(rawLiqPercent);
       parts.push(`Locked Liquidity: ${lockedLiqPercent}% of pool`);
+    }
+    
+    // Show native token locked for LP locks (important metric that can't be manipulated)
+    if (tokenData.isLPLock && pairedTokenAmount && pairedTokenInfo) {
+      // Check if the paired token is the native wrapped token
+      const wrappedNativeTokens = {
+        1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
+        56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
+        137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC/WPOL
+        8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
+      };
+      
+      const pairedTokenLower = tokenData.token1?.toLowerCase();
+      const nativeTokenAddress = wrappedNativeTokens[chainId]?.toLowerCase();
+      
+      if (pairedTokenLower === nativeTokenAddress) {
+        const nativeStr = pairedTokenAmount >= 1 
+          ? pairedTokenAmount.toFixed(2)
+          : pairedTokenAmount.toFixed(4);
+        
+        if (nativePrice) {
+          const nativeUsdValue = (pairedTokenAmount * nativePrice).toFixed(2);
+          parts.push(`Native Locked: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
+        } else {
+          parts.push(`Native Locked: ${nativeStr} ${nativeSymbol}`);
+        }
+      }
     }
     
     parts.push(`Duration: ${duration}`);
@@ -1670,6 +1747,12 @@ module.exports = async (req, res) => {
         parts.push(`[${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}](${explorerUrl}${lockOwner})`);
       } else {
         parts.push(`\`${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}\``);
+      }
+      
+      // Show wallet age
+      const walletAge = walletCreationTime ? formatContractAge(walletCreationTime * 1000) : null;
+      if (walletAge) {
+        parts.push(`Wallet Age: ${walletAge}`);
       }
       
       // Show lock fee
@@ -1756,15 +1839,9 @@ module.exports = async (req, res) => {
       parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
     }
     
-    // Top 10 holders percentage
+    // Top 10 holders percentage of supply
     if (enriched.securityData?.topHolderPercent) {
-      parts.push(`Top 10 Holders: ${enriched.securityData.topHolderPercent.toFixed(1)}%`);
-    }
-    
-    // Market Cap to Liquidity Ratio
-    if (enriched.marketCap && enriched.liquidity && enriched.liquidity > 0) {
-      const mcLiqRatio = (enriched.marketCap / enriched.liquidity).toFixed(2);
-      parts.push(`MC/Liq Ratio: ${mcLiqRatio}x`);
+      parts.push(`Top 10 Hold: ${enriched.securityData.topHolderPercent.toFixed(1)}% of supply`);
     }
     
     // Pattern warnings (if any)
