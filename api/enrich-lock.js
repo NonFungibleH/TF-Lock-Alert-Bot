@@ -895,8 +895,15 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
             priceChange6h: bestPair.priceChange?.h6 || null,
             // NEW: Extract volume
             volume24h: bestPair.volume?.h24 || null,
+            buyVolume24h: bestPair.volume?.h24Buy || null,
+            sellVolume24h: bestPair.volume?.h24Sell || null,
             // NEW: Extract buys/sells
             txns24h: bestPair.txns?.h24 || null,
+            // NEW: Extract makers (unique traders)
+            makers24h: {
+              buyers: bestPair.txns?.h24?.buyers || null,
+              sellers: bestPair.txns?.h24?.sellers || null
+            },
             source: 'DexScreener'
           };
         }
@@ -1048,6 +1055,349 @@ function formatPercentage(percent) {
   
   // For percentages < 10, show 2 decimals
   return num.toFixed(2);
+}
+
+// Calculate opportunity score out of 100
+function calculateOpportunityScore(data) {
+  const {
+    lockedPercent,
+    unlockTime,
+    nativeLocked,
+    nativePrice,
+    isVerified,
+    isRenounced,
+    isHoneypot,
+    topHolderPercent,
+    holderCount,
+    tokenAgeMinutes,
+    poolAgeMinutes,
+    buysSells,
+    volume24h,
+    liquidity
+  } = data;
+  
+  let score = 0;
+  const breakdown = {};
+  
+  // === LOCK QUALITY (40 points) ===
+  let lockQuality = 0;
+  
+  // Lock duration (0-15 pts)
+  if (unlockTime) {
+    const now = Math.floor(Date.now() / 1000);
+    const durationDays = (unlockTime - now) / 86400;
+    
+    if (durationDays >= 365) lockQuality += 15;
+    else if (durationDays >= 180) lockQuality += 12;
+    else if (durationDays >= 90) lockQuality += 9;
+    else if (durationDays >= 30) lockQuality += 6;
+    else if (durationDays >= 7) lockQuality += 3;
+    else lockQuality += 1;
+  }
+  
+  // % of liquidity locked (0-15 pts)
+  if (lockedPercent) {
+    const percent = parseFloat(lockedPercent);
+    if (percent >= 90) lockQuality += 15;
+    else if (percent >= 75) lockQuality += 12;
+    else if (percent >= 50) lockQuality += 9;
+    else if (percent >= 25) lockQuality += 6;
+    else lockQuality += 3;
+  }
+  
+  // Native token locked amount (0-10 pts)
+  if (nativeLocked && nativePrice) {
+    const usdValue = nativeLocked * nativePrice;
+    if (usdValue >= 100000) lockQuality += 10;
+    else if (usdValue >= 50000) lockQuality += 8;
+    else if (usdValue >= 25000) lockQuality += 6;
+    else if (usdValue >= 10000) lockQuality += 4;
+    else if (usdValue >= 1000) lockQuality += 2;
+  }
+  
+  breakdown.lockQuality = lockQuality;
+  score += lockQuality;
+  
+  // === CONTRACT SAFETY (25 points) ===
+  let contractSafety = 0;
+  
+  if (isVerified === true) contractSafety += 10;
+  if (isRenounced === true) contractSafety += 10;
+  if (isHoneypot === false) contractSafety += 5;
+  
+  breakdown.contractSafety = contractSafety;
+  score += contractSafety;
+  
+  // === TOKEN DISTRIBUTION (20 points) ===
+  let distribution = 0;
+  
+  // Top 10 holders (0-10 pts) - lower is better
+  if (topHolderPercent !== null && topHolderPercent !== undefined) {
+    if (topHolderPercent <= 20) distribution += 10;
+    else if (topHolderPercent <= 30) distribution += 8;
+    else if (topHolderPercent <= 40) distribution += 6;
+    else if (topHolderPercent <= 50) distribution += 4;
+    else if (topHolderPercent <= 70) distribution += 2;
+    else distribution += 0;
+  }
+  
+  // Holder count (0-10 pts) - more is better
+  if (holderCount) {
+    if (holderCount >= 1000) distribution += 10;
+    else if (holderCount >= 500) distribution += 8;
+    else if (holderCount >= 250) distribution += 6;
+    else if (holderCount >= 100) distribution += 4;
+    else if (holderCount >= 50) distribution += 2;
+  }
+  
+  breakdown.distribution = distribution;
+  score += distribution;
+  
+  // === MARKET METRICS (15 points) ===
+  let marketMetrics = 0;
+  
+  // Token age (0-5 pts) - older is more established
+  if (tokenAgeMinutes) {
+    const ageDays = tokenAgeMinutes / (60 * 24);
+    if (ageDays >= 365) marketMetrics += 5;
+    else if (ageDays >= 90) marketMetrics += 4;
+    else if (ageDays >= 30) marketMetrics += 3;
+    else if (ageDays >= 7) marketMetrics += 2;
+    else if (ageDays >= 1) marketMetrics += 1;
+  } else if (poolAgeMinutes) {
+    // Fallback to pool age if token age unavailable
+    const ageDays = poolAgeMinutes / (60 * 24);
+    if (ageDays >= 30) marketMetrics += 3;
+    else if (ageDays >= 7) marketMetrics += 2;
+    else if (ageDays >= 1) marketMetrics += 1;
+  }
+  
+  // Buy/sell ratio (0-4 pts)
+  if (buysSells && buysSells.buys && buysSells.sells) {
+    const ratio = buysSells.buys / buysSells.sells;
+    if (ratio >= 3) marketMetrics += 4;
+    else if (ratio >= 2) marketMetrics += 3;
+    else if (ratio >= 1.5) marketMetrics += 2;
+    else if (ratio >= 1) marketMetrics += 1;
+  }
+  
+  // Volume relative to liquidity (0-3 pts)
+  if (volume24h && liquidity && liquidity > 0) {
+    const volumeRatio = volume24h / liquidity;
+    if (volumeRatio >= 1) marketMetrics += 3;
+    else if (volumeRatio >= 0.5) marketMetrics += 2;
+    else if (volumeRatio >= 0.1) marketMetrics += 1;
+  }
+  
+  // Activity level - makers count (0-3 pts)
+  if (data.makers24h) {
+    const totalMakers = (data.makers24h.buyers || 0) + (data.makers24h.sellers || 0);
+    if (totalMakers >= 500) marketMetrics += 3;
+    else if (totalMakers >= 200) marketMetrics += 2;
+    else if (totalMakers >= 50) marketMetrics += 1;
+  }
+  
+  breakdown.marketMetrics = marketMetrics;
+  score += marketMetrics;
+  
+  return { score, breakdown };
+}
+
+// Generate smart AI-like analysis
+function generateSmartAnalysis(data) {
+  const {
+    score,
+    lockedPercent,
+    unlockTime,
+    nativeLocked,
+    nativePrice,
+    isVerified,
+    isRenounced,
+    isHoneypot,
+    topHolderPercent,
+    holderCount,
+    tokenAgeMinutes,
+    poolAgeMinutes,
+    buysSells,
+    tokenSymbol,
+    isLPLock
+  } = data;
+  
+  const parts = [];
+  
+  // === OPENING LINE: Age + Lock Strength ===
+  let opening = '';
+  const ageMinutes = tokenAgeMinutes || poolAgeMinutes || 0;
+  const ageDays = ageMinutes / (60 * 24);
+  
+  if (ageDays < 0.04) { // < 1 hour
+    opening = 'This is a **FRESH launch** ';
+  } else if (ageDays < 1) {
+    opening = 'This is a **NEW token** ';
+  } else if (ageDays < 30) {
+    opening = 'This is a **RECENT token** ';
+  } else {
+    opening = 'This is an **ESTABLISHED token** ';
+  }
+  
+  const lockedPct = parseFloat(lockedPercent) || 0;
+  if (isLPLock) {
+    if (lockedPct >= 80) {
+      opening += 'with **STRONG liquidity protection**. ';
+    } else if (lockedPct >= 50) {
+      opening += 'with **DECENT liquidity protection**. ';
+    } else if (lockedPct >= 25) {
+      opening += 'with **MODERATE liquidity protection**. ';
+    } else {
+      opening += 'with **WEAK liquidity protection**. ';
+    }
+    
+    if (lockedPercent) {
+      opening += `${lockedPercent}% of the pool is locked`;
+    }
+    
+    if (unlockTime) {
+      const now = Math.floor(Date.now() / 1000);
+      const durationDays = (unlockTime - now) / 86400;
+      if (durationDays >= 365) {
+        opening += ` for ${Math.floor(durationDays / 365)}+ years`;
+      } else if (durationDays >= 30) {
+        opening += ` for ${Math.floor(durationDays / 30)}+ months`;
+      } else if (durationDays >= 7) {
+        opening += ` for ${Math.floor(durationDays / 7)}+ weeks`;
+      } else {
+        opening += ` for only ${Math.floor(durationDays)} days`;
+      }
+    }
+  } else {
+    opening += 'with token locks in place';
+  }
+  
+  if (nativeLocked && nativePrice) {
+    const usdValue = nativeLocked * nativePrice;
+    if (usdValue >= 10000) {
+      const usdStr = usdValue >= 1000000 
+        ? `$${(usdValue / 1000000).toFixed(1)}M`
+        : `$${(usdValue / 1000).toFixed(0)}K`;
+      opening += ` with ${usdStr} in native tokens secured.`;
+    } else {
+      opening += '.';
+    }
+  } else {
+    opening += '.';
+  }
+  
+  parts.push(opening);
+  
+  // === STRENGTHS (positive signals) ===
+  const strengths = [];
+  
+  if (isVerified && isRenounced) {
+    strengths.push('contract verified & renounced');
+  } else if (isVerified) {
+    strengths.push('contract verified');
+  } else if (isRenounced) {
+    strengths.push('ownership renounced');
+  }
+  
+  if (isHoneypot === false) {
+    strengths.push('not a honeypot');
+  }
+  
+  if (lockedPct >= 75 && isLPLock) {
+    strengths.push('high liquidity locked');
+  }
+  
+  if (buysSells && buysSells.buys && buysSells.sells) {
+    const ratio = buysSells.buys / buysSells.sells;
+    if (ratio >= 2) {
+      strengths.push(`strong buy pressure (${ratio.toFixed(1)}x more buys)`);
+    }
+  }
+  
+  if (topHolderPercent !== null && topHolderPercent <= 30) {
+    strengths.push('well-distributed holdings');
+  }
+  
+  if (holderCount >= 500) {
+    strengths.push(`${holderCount.toLocaleString()} holders`);
+  }
+  
+  if (strengths.length > 0) {
+    parts.push(`\n\n✅ **Strengths:** ${strengths.join(', ')}`);
+  }
+  
+  // === RISKS (warning signals) ===
+  const risks = [];
+  
+  if (ageDays < 1) {
+    if (ageDays < 0.04) {
+      risks.push('extremely new (< 1 hour old)');
+    } else {
+      risks.push('very new token');
+    }
+  }
+  
+  if (topHolderPercent !== null && topHolderPercent > 50) {
+    risks.push(`highly concentrated (top 10 hold ${topHolderPercent.toFixed(0)}%)`);
+  } else if (topHolderPercent !== null && topHolderPercent > 40) {
+    risks.push(`concentrated holdings (top 10 hold ${topHolderPercent.toFixed(0)}%)`);
+  }
+  
+  if (lockedPct < 50 && isLPLock) {
+    risks.push('low liquidity lock');
+  }
+  
+  if (unlockTime) {
+    const now = Math.floor(Date.now() / 1000);
+    const durationDays = (unlockTime - now) / 86400;
+    if (durationDays < 7) {
+      risks.push('lock expires soon');
+    }
+  }
+  
+  if (!isVerified) {
+    risks.push('contract not verified');
+  }
+  
+  if (!isRenounced) {
+    risks.push('owner can still control contract');
+  }
+  
+  if (holderCount && holderCount < 50) {
+    risks.push('very few holders');
+  }
+  
+  if (risks.length > 0) {
+    parts.push(`\n⚠️ **Risks:** ${risks.join(', ')}`);
+  }
+  
+  // === BOTTOM LINE ===
+  let bottomLine = '\n\n**Bottom Line:** ';
+  
+  if (score >= 80) {
+    bottomLine += 'Excellent fundamentals with strong protection. ';
+  } else if (score >= 70) {
+    bottomLine += 'Good setup with solid risk management. ';
+  } else if (score >= 60) {
+    bottomLine += 'Decent fundamentals but some concerns. ';
+  } else if (score >= 50) {
+    bottomLine += 'Mixed signals - moderate risk. ';
+  } else {
+    bottomLine += 'Weak fundamentals - high risk. ';
+  }
+  
+  if (ageDays < 1) {
+    bottomLine += 'Early entry opportunity but expect high volatility.';
+  } else if (score >= 70) {
+    bottomLine += 'Lower risk entry for those seeking stability.';
+  } else {
+    bottomLine += 'Proceed with caution and only risk what you can afford to lose.';
+  }
+  
+  parts.push(bottomLine);
+  
+  return parts.join('');
 }
 
 function formatDuration(unlockTime) {
@@ -1486,6 +1836,61 @@ module.exports = async (req, res) => {
     
     parts.push("");
     
+    // === CALCULATE SCORE AND GENERATE ANALYSIS ===
+    const tokenAgeMinutes = tokenCreationTime ? (Date.now() - tokenCreationTime * 1000) / (1000 * 60) : null;
+    const poolAgeMinutes = enriched.pairCreatedAt ? (Date.now() - new Date(enriched.pairCreatedAt).getTime()) / (1000 * 60) : null;
+    
+    // Prepare data for scoring
+    const scoringData = {
+      lockedPercent: lockedPercent,
+      unlockTime: tokenData.unlockTime,
+      nativeLocked: enriched.nativeTokenAmount || null,
+      nativePrice: nativePrice,
+      isVerified: enriched.securityData?.isOpenSource === true,
+      isRenounced: enriched.securityData?.canTakeBackOwnership === false,
+      isHoneypot: enriched.securityData?.isHoneypot === false,
+      topHolderPercent: enriched.securityData?.topHolderPercent,
+      holderCount: enriched.securityData?.holderCount,
+      tokenAgeMinutes: tokenAgeMinutes,
+      poolAgeMinutes: poolAgeMinutes,
+      buysSells: enriched.txns24h,
+      volume24h: enriched.volume24h,
+      liquidity: enriched.liquidity,
+      tokenSymbol: tokenInfo.symbol,
+      isLPLock: tokenData.isLPLock,
+      makers24h: enriched.makers24h
+    };
+    
+    const { score } = calculateOpportunityScore(scoringData);
+    const analysis = generateSmartAnalysis({ ...scoringData, score });
+    
+    // Display score with color coding
+    let scoreEmoji = '💎';
+    let scoreRating = '';
+    if (score >= 80) {
+      scoreEmoji = '🟢';
+      scoreRating = 'Excellent';
+    } else if (score >= 70) {
+      scoreEmoji = '🟡';
+      scoreRating = 'Good';
+    } else if (score >= 60) {
+      scoreEmoji = '🟠';
+      scoreRating = 'Fair';
+    } else if (score >= 50) {
+      scoreEmoji = '🔴';
+      scoreRating = 'Moderate Risk';
+    } else {
+      scoreEmoji = '🔴';
+      scoreRating = 'High Risk';
+    }
+    
+    parts.push(`${scoreEmoji} **Lock Score: ${score}/100** (${scoreRating})`);
+    parts.push("");
+    parts.push("🧠 **Analysis**");
+    parts.push(analysis);
+    
+    parts.push("");
+    
     // 1. Token info
     parts.push("💎 **Token info**");
     parts.push(`Token: $${tokenInfo.symbol}`);
@@ -1825,6 +2230,29 @@ module.exports = async (req, res) => {
       parts.push(`Liquidity: ${liqStr}`);
     }
     
+    // Total Transactions 24h (TXNS)
+    if (enriched.txns24h) {
+      const totalTxns = (enriched.txns24h.buys || 0) + (enriched.txns24h.sells || 0);
+      if (totalTxns > 0) {
+        const txnsStr = totalTxns >= 1000000
+          ? `${(totalTxns / 1000000).toFixed(1)}M`
+          : totalTxns >= 1000
+          ? `${(totalTxns / 1000).toFixed(1)}K`
+          : totalTxns.toLocaleString();
+        parts.push(`TXNs (24h): ${txnsStr}`);
+      }
+    }
+    
+    // Buys count
+    if (enriched.txns24h?.buys) {
+      parts.push(`Buys: ${enriched.txns24h.buys.toLocaleString()}`);
+    }
+    
+    // Sells count
+    if (enriched.txns24h?.sells) {
+      parts.push(`Sells: ${enriched.txns24h.sells.toLocaleString()}`);
+    }
+    
     // Volume 24h
     if (enriched.volume24h) {
       const volStr = enriched.volume24h >= 1000000
@@ -1833,6 +2261,26 @@ module.exports = async (req, res) => {
         ? `$${(enriched.volume24h / 1000).toFixed(1)}K`
         : `$${enriched.volume24h.toFixed(0)}`;
       parts.push(`Volume 24h: ${volStr}`);
+    }
+    
+    // Buy Volume 24h
+    if (enriched.buyVolume24h) {
+      const buyVolStr = enriched.buyVolume24h >= 1000000
+        ? `$${(enriched.buyVolume24h / 1000000).toFixed(1)}M`
+        : enriched.buyVolume24h >= 1000
+        ? `$${(enriched.buyVolume24h / 1000).toFixed(1)}K`
+        : `$${enriched.buyVolume24h.toFixed(0)}`;
+      parts.push(`Buy Vol: ${buyVolStr}`);
+    }
+    
+    // Sell Volume 24h
+    if (enriched.sellVolume24h) {
+      const sellVolStr = enriched.sellVolume24h >= 1000000
+        ? `$${(enriched.sellVolume24h / 1000000).toFixed(1)}M`
+        : enriched.sellVolume24h >= 1000
+        ? `$${(enriched.sellVolume24h / 1000).toFixed(1)}K`
+        : `$${enriched.sellVolume24h.toFixed(0)}`;
+      parts.push(`Sell Vol: ${sellVolStr}`);
     }
     
     // Buys/Sells ratio
@@ -1855,6 +2303,25 @@ module.exports = async (req, res) => {
           ratioText = ' (only buys)';
         }
         parts.push(`Buys/Sells: ${buys.toLocaleString()}/${sells.toLocaleString()}${ratioText}`);
+      }
+    }
+    
+    // Makers (unique buyers/sellers)
+    if (enriched.makers24h) {
+      const buyers = enriched.makers24h.buyers || 0;
+      const sellers = enriched.makers24h.sellers || 0;
+      const totalMakers = buyers + sellers;
+      
+      if (totalMakers > 0) {
+        parts.push(`Makers: ${totalMakers.toLocaleString()}`);
+      }
+      
+      if (buyers > 0) {
+        parts.push(`Buyers: ${buyers.toLocaleString()}`);
+      }
+      
+      if (sellers > 0) {
+        parts.push(`Sellers: ${sellers.toLocaleString()}`);
       }
     }
     
