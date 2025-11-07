@@ -2245,7 +2245,7 @@ module.exports = async (req, res) => {
     
     // 5. Trading Stats section
     parts.push("");
-    parts.push("📊 **Trading stats**);
+    parts.push("📊 **Trading stats**");
     
     // Only show liquidity here for non-LP locks (for LP locks it's already in Token info)
     if (!tokenData.isLPLock && enriched.liquidity) {
