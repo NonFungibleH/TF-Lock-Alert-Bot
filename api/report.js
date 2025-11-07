@@ -96,8 +96,8 @@ async function generateReport(hoursBack = 72) {
       return `📊 **Lock Performance Report**\n\nFound ${locks.length} locks but couldn't fetch current prices.`;
     }
     
-    // Sort by performance
-    const sorted = [...locksWithPerformance].sort((a, b) => b.price_change - a.price_change);
+    // Sort by time (most recent first)
+    const sorted = [...locksWithPerformance].sort((a, b) => b.created_at - a.created_at);
     
     // Calculate stats
     const profitable = sorted.filter(l => l.price_change > 0);
@@ -118,34 +118,65 @@ async function generateReport(hoursBack = 72) {
     lines.push(`${new Date().toLocaleDateString()} | Past ${hoursBack}h`);
     lines.push('');
     
-    // Top performers
-    lines.push('🏆 **Top Performers**');
-    const topPerformers = sorted.slice(0, 5);
-    topPerformers.forEach((lock, i) => {
+    // List all locks with performance
+    sorted.forEach((lock, i) => {
+      const changeEmoji = lock.price_change > 0 ? '🟢' : lock.price_change < 0 ? '🔴' : '⚪';
+      const changeText = lock.price_change > 0 ? 'gain' : 'loss';
       const scoreStr = lock.lock_score ? ` | Score: ${lock.lock_score}/100` : '';
-      lines.push(`${i + 1}. $${lock.token_symbol} | ${formatChange(lock.price_change)}`);
-      lines.push(`   ${lock.hours_ago}h ago${scoreStr}`);
+      
+      lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji}`);
+      lines.push(`Alert: $${lock.detection_price.toFixed(8)}`);
+      lines.push(`Live: $${lock.current_price.toFixed(8)}`);
+      lines.push(`Performance: ${Math.abs(lock.price_change).toFixed(1)}% ${changeText}${scoreStr}`);
+      lines.push('');
     });
     
-    // Biggest losers
-    if (unprofitable.length > 0) {
-      lines.push('');
-      lines.push('💀 **Biggest Losers**');
-      const biggestLosers = sorted.slice(-5).reverse();
-      biggestLosers.forEach((lock, i) => {
-        const scoreStr = lock.lock_score ? ` | Score: ${lock.lock_score}/100` : '';
-        lines.push(`${i + 1}. $${lock.token_symbol} | ${formatChange(lock.price_change)}`);
-        lines.push(`   ${lock.hours_ago}h ago${scoreStr}`);
-      });
-    }
-    
-    // Summary stats
-    lines.push('');
+    // Summary
     lines.push('📈 **Summary**');
-    lines.push(`• Total Locks: ${sorted.length}`);
-    lines.push(`• Profitable: ${profitable.length} (${profitRate}%)`);
-    lines.push(`• Avg Score of Winners: ${avgScoreWinners}/100`);
-    lines.push(`• Avg Score of Losers: ${avgScoreLosers}/100`);
+    lines.push(`Total Locks: ${sorted.length}`);
+    lines.push(`Profitable: ${profitable.length} (${profitRate}%)`);
+    lines.push(`Avg Score of Winners: ${avgScoreWinners}/100`);
+    lines.push(`Avg Score of Losers: ${avgScoreLosers}/100`);
+    lines.push('');
+    
+    // Lock statistics from past 24 hours
+    const locks24h = await pool.query(`
+      SELECT 
+        COUNT(*) as total_locks,
+        COUNT(*) FILTER (WHERE platform = 'Team Finance') as team_finance,
+        COUNT(*) FILTER (WHERE platform = 'UNCX') as uncx,
+        COUNT(*) FILTER (WHERE chain_id = '1') as ethereum,
+        COUNT(*) FILTER (WHERE chain_id = '56') as bnb,
+        COUNT(*) FILTER (WHERE chain_id = '8453') as base,
+        COUNT(*) FILTER (WHERE chain_id = '137') as polygon
+      FROM lock_alerts
+      WHERE created_at >= EXTRACT(EPOCH FROM NOW()) - 86400
+    `);
+    
+    if (locks24h.rows.length > 0) {
+      const stats = locks24h.rows[0];
+      const totalLocks24h = parseInt(stats.total_locks) || 0;
+      const tfCount = parseInt(stats.team_finance) || 0;
+      const uncxCount = parseInt(stats.uncx) || 0;
+      const ethCount = parseInt(stats.ethereum) || 0;
+      const bnbCount = parseInt(stats.bnb) || 0;
+      const baseCount = parseInt(stats.base) || 0;
+      const polygonCount = parseInt(stats.polygon) || 0;
+      
+      lines.push('🔒 **Lock Stats (Past 24h)**');
+      lines.push(`Total Created: ${totalLocks24h}`);
+      lines.push(`Share: ${tfCount} TF / ${uncxCount} UNCX`);
+      
+      const chains = [];
+      if (ethCount > 0) chains.push(`Ethereum: ${ethCount}`);
+      if (bnbCount > 0) chains.push(`BNB: ${bnbCount}`);
+      if (baseCount > 0) chains.push(`Base: ${baseCount}`);
+      if (polygonCount > 0) chains.push(`Polygon: ${polygonCount}`);
+      
+      if (chains.length > 0) {
+        lines.push(chains.join(' | '));
+      }
+    }
     
     return lines.join('\n');
     
