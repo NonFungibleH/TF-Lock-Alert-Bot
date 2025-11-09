@@ -2454,16 +2454,18 @@ module.exports = async (req, res) => {
       await pool.query(`
         UPDATE lock_alerts 
         SET 
-          detection_price = $1,
-          detection_mcap = $2,
-          detection_liquidity = $3,
-          lock_score = $4,
-          locked_percent = $5,
-          native_locked_usd = $6,
-          token_symbol = $7,
-          enriched_at = $8
-        WHERE transaction_id = $9
+          token_address = $1,
+          detection_price = $2,
+          detection_mcap = $3,
+          detection_liquidity = $4,
+          lock_score = $5,
+          locked_percent = $6,
+          native_locked_usd = $7,
+          token_symbol = $8,
+          enriched_at = $9
+        WHERE transaction_id = $10
       `, [
+        tokenData.tokenAddress || null,
         enriched.price || null,
         enriched.marketCap || null,
         enriched.liquidity || null,
