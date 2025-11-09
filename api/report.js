@@ -107,7 +107,6 @@ async function generateReport(hoursBack = 72) {
         created_at >= EXTRACT(EPOCH FROM NOW()) - $1
         AND detection_price IS NOT NULL
         AND token_symbol IS NOT NULL
-        AND token_address IS NOT NULL
       ORDER BY created_at DESC
     `, [hoursBack * 3600]);
     
