@@ -37,13 +37,23 @@ async function getCurrentPrice(tokenAddress, chainId) {
         
         const bestPair = sortedByLiquidity[0];
         
-        // Get price based on which token in the pair is ours
+        // DexScreener's priceUsd is ALWAYS the price of baseToken in USD
+        // We need to figure out which token is ours and get the right price
         let price;
         if (bestPair.baseToken?.address?.toLowerCase() === tokenAddress.toLowerCase()) {
+          // Our token is the base token, use priceUsd directly
           price = parseFloat(bestPair.priceUsd);
         } else {
-          // If our token is the quote token, price is inverted
-          price = 1 / parseFloat(bestPair.priceUsd);
+          // Our token is the quote token
+          // Need to get our token's price from priceNative or calculate it
+          // For quote token: if base/quote pair, and we want quote price,
+          // we need to know the quote token (usually WETH, WBNB, etc) price in USD
+          // But DexScreener doesn't give us quote token price directly
+          // Best option: use priceNative if quote is a known stable/native token
+          
+          // For now, skip pairs where our token is quote token as we can't reliably get price
+          console.log(`⚠️ Token ${tokenAddress.slice(0,8)}... is quote token in pair, skipping`);
+          return null;
         }
         
         console.log(`Price for ${tokenAddress.slice(0,8)}...: $${price} (liq: $${bestPair.liquidity?.usd || 0})`);
@@ -97,6 +107,7 @@ async function generateReport(hoursBack = 72) {
         created_at >= EXTRACT(EPOCH FROM NOW()) - $1
         AND detection_price IS NOT NULL
         AND token_symbol IS NOT NULL
+        AND token_address IS NOT NULL
       ORDER BY created_at DESC
     `, [hoursBack * 3600]);
     
