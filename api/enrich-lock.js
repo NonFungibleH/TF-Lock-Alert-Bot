@@ -1913,25 +1913,35 @@ module.exports = async (req, res) => {
     const { score } = calculateOpportunityScore(scoringData);
     const analysis = generateSmartAnalysis({ ...scoringData, score });
     
-    // Extract just the bottom line from analysis
-    const bottomLineMatch = analysis.match(/\*\*Bottom Line:\*\* (.+?)(?:\n|$)/);
-    const bottomLine = bottomLineMatch ? bottomLineMatch[1] : 'Analysis pending';
+    // Check if this is a stablecoin
+    const stablecoins = ['USDC', 'USDT', 'DAI', 'BUSD', 'USDB', 'USDBC', 'FRAX', 'TUSD', 'LUSD'];
+    const isStablecoin = stablecoins.includes(tokenInfo.symbol.toUpperCase());
     
-    // Display simplified analysis
-    let scoreRating = '';
-    if (score >= 80) {
-      scoreRating = 'Excellent';
-    } else if (score >= 70) {
-      scoreRating = 'Good';
-    } else if (score >= 60) {
-      scoreRating = 'Fair';
-    } else if (score >= 50) {
-      scoreRating = 'Moderate Risk';
+    if (isStablecoin) {
+      // Stablecoin - show simple message instead of score
+      parts.push(`🔒 **Liquidity Lock:** No price movement expected - this is a stablecoin!`);
     } else {
-      scoreRating = 'High Risk';
+      // Regular token - show score and analysis
+      // Extract just the bottom line from analysis
+      const bottomLineMatch = analysis.match(/\*\*Bottom Line:\*\* (.+?)(?:\n|$)/);
+      const bottomLine = bottomLineMatch ? bottomLineMatch[1] : 'Analysis pending';
+      
+      // Display simplified analysis
+      let scoreRating = '';
+      if (score >= 80) {
+        scoreRating = 'Excellent';
+      } else if (score >= 70) {
+        scoreRating = 'Good';
+      } else if (score >= 60) {
+        scoreRating = 'Fair';
+      } else if (score >= 50) {
+        scoreRating = 'Moderate Risk';
+      } else {
+        scoreRating = 'High Risk';
+      }
+      
+      parts.push(`🧠 **Analysis:** ${score}/100 (${scoreRating}). ${bottomLine}`);
     }
-    
-    parts.push(`🧠 **Analysis:** ${score}/100 (${scoreRating}). ${bottomLine}`);
     
     parts.push("");
     
