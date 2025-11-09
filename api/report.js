@@ -124,10 +124,15 @@ async function generateReport(hoursBack = 72) {
       const changeText = lock.price_change > 0 ? 'gain' : 'loss';
       const scoreStr = lock.lock_score ? ` | Score: ${lock.lock_score}/100` : '';
       
+      // Convert to numbers (database returns as strings)
+      const detectionPrice = parseFloat(lock.detection_price);
+      const currentPrice = parseFloat(lock.current_price);
+      const priceChange = parseFloat(lock.price_change);
+      
       lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji}`);
-      lines.push(`Alert: $${lock.detection_price.toFixed(8)}`);
-      lines.push(`Live: $${lock.current_price.toFixed(8)}`);
-      lines.push(`Performance: ${Math.abs(lock.price_change).toFixed(1)}% ${changeText}${scoreStr}`);
+      lines.push(`Alert: $${detectionPrice.toFixed(8)}`);
+      lines.push(`Live: $${currentPrice.toFixed(8)}`);
+      lines.push(`Performance: ${Math.abs(priceChange).toFixed(1)}% ${changeText}${scoreStr}`);
       lines.push('');
     });
     
