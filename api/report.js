@@ -13,10 +13,43 @@ async function getCurrentPrice(tokenAddress, chainId) {
     const response = await axios.get(url, { timeout: 5000 });
     
     if (response.data?.pairs && response.data.pairs.length > 0) {
-      const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
+      // Filter to correct chain AND exact token address match
+      const chainPairs = response.data.pairs.filter(p => {
+        const matchesChain = p.chainId === chainName;
+        // Check if our token is either baseToken or quoteToken in the pair
+        const baseTokenMatch = p.baseToken?.address?.toLowerCase() === tokenAddress.toLowerCase();
+        const quoteTokenMatch = p.quoteToken?.address?.toLowerCase() === tokenAddress.toLowerCase();
+        return matchesChain && (baseTokenMatch || quoteTokenMatch);
+      });
+      
       if (chainPairs.length > 0) {
-        return parseFloat(chainPairs[0].priceUsd) || null;
+        // Sort by liquidity (highest first) to get most accurate price
+        const sortedByLiquidity = chainPairs.sort((a, b) => {
+          const liqA = parseFloat(a.liquidity?.usd || 0);
+          const liqB = parseFloat(b.liquidity?.usd || 0);
+          return liqB - liqA;
+        });
+        
+        const bestPair = sortedByLiquidity[0];
+        
+        // Get price based on which token in the pair is ours
+        let price;
+        if (bestPair.baseToken?.address?.toLowerCase() === tokenAddress.toLowerCase()) {
+          price = parseFloat(bestPair.priceUsd);
+        } else {
+          // If our token is the quote token, price is inverted
+          price = 1 / parseFloat(bestPair.priceUsd);
+        }
+        
+        console.log(`Price for ${tokenAddress.slice(0,8)}...: $${price} (liq: $${bestPair.liquidity?.usd || 0})`);
+        
+        // Handle very small numbers that might be displayed incorrectly
+        if (price && !isNaN(price) && price > 0) {
+          return price;
+        }
       }
+      
+      console.log(`⚠️ No matching pairs found for ${tokenAddress.slice(0,8)}... on ${chainName}`);
     }
     return null;
   } catch (err) {
@@ -76,7 +109,13 @@ async function generateReport(hoursBack = 72) {
       const currentPrice = await getCurrentPrice(lock.token_address, lock.chain_id);
       
       if (currentPrice && lock.detection_price) {
-        const priceChange = ((currentPrice - lock.detection_price) / lock.detection_price) * 100;
+        const detectionPrice = parseFloat(lock.detection_price);
+        const priceChange = ((currentPrice - detectionPrice) / detectionPrice) * 100;
+        
+        // Sanity check: If price change is > 1,000,000% or price drops to near zero, likely bad data
+        if (Math.abs(priceChange) > 1000000) {
+          console.log(`⚠️ Suspicious price for ${lock.token_symbol}: detection=$${detectionPrice}, current=$${currentPrice}, change=${priceChange.toFixed(0)}%`);
+        }
         
         locksWithPerformance.push({
           ...lock,
@@ -96,8 +135,12 @@ async function generateReport(hoursBack = 72) {
       return `📊 **Lock Performance Report**\n\nFound ${locks.length} locks but couldn't fetch current prices.`;
     }
     
-    // Sort by time (most recent first)
-    const sorted = [...locksWithPerformance].sort((a, b) => b.created_at - a.created_at);
+    // Sort by performance (best to worst)
+    const sorted = [...locksWithPerformance].sort((a, b) => b.price_change - a.price_change);
+    
+    // Split into 24h and 24-72h
+    const locks24h = sorted.filter(l => l.hours_ago < 24);
+    const locks2472h = sorted.filter(l => l.hours_ago >= 24);
     
     // Calculate stats
     const profitable = sorted.filter(l => l.price_change > 0);
@@ -118,23 +161,39 @@ async function generateReport(hoursBack = 72) {
     lines.push(`${new Date().toLocaleDateString()} | Past ${hoursBack}h`);
     lines.push('');
     
-    // List all locks with performance
-    sorted.forEach((lock, i) => {
-      const changeEmoji = lock.price_change > 0 ? '🟢' : lock.price_change < 0 ? '🔴' : '⚪';
-      const changeText = lock.price_change > 0 ? 'gain' : 'loss';
-      const scoreStr = lock.lock_score ? ` | Score: ${lock.lock_score}/100` : '';
-      
-      // Convert to numbers (database returns as strings)
-      const detectionPrice = parseFloat(lock.detection_price);
-      const currentPrice = parseFloat(lock.current_price);
-      const priceChange = parseFloat(lock.price_change);
-      
-      lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji}`);
-      lines.push(`Alert: $${detectionPrice.toFixed(8)}`);
-      lines.push(`Live: $${currentPrice.toFixed(8)}`);
-      lines.push(`Performance: ${Math.abs(priceChange).toFixed(1)}% ${changeText}${scoreStr}`);
+    // Section 1: Past 24 hours
+    if (locks24h.length > 0) {
+      lines.push('⏰ **Past 24 Hours**');
       lines.push('');
-    });
+      
+      locks24h.forEach((lock, i) => {
+        const changeEmoji = lock.price_change > 0 ? '🟢' : lock.price_change < 0 ? '🔴' : '⚪';
+        const sign = lock.price_change > 0 ? '+' : '';
+        const priceChange = parseFloat(lock.price_change);
+        const scoreStr = lock.lock_score ? ` (${lock.lock_score}/100)` : '';
+        
+        lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji} ${sign}${priceChange.toFixed(1)}%${scoreStr}`);
+      });
+      
+      lines.push('');
+    }
+    
+    // Section 2: 24-72 hours
+    if (locks2472h.length > 0) {
+      lines.push('📅 **24-72 Hours Ago**');
+      lines.push('');
+      
+      locks2472h.forEach((lock, i) => {
+        const changeEmoji = lock.price_change > 0 ? '🟢' : lock.price_change < 0 ? '🔴' : '⚪';
+        const sign = lock.price_change > 0 ? '+' : '';
+        const priceChange = parseFloat(lock.price_change);
+        const scoreStr = lock.lock_score ? ` (${lock.lock_score}/100)` : '';
+        
+        lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji} ${sign}${priceChange.toFixed(1)}%${scoreStr}`);
+      });
+      
+      lines.push('');
+    }
     
     // Summary
     lines.push('📈 **Summary**');
