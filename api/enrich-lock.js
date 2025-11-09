@@ -499,7 +499,12 @@ function extractTokenData(lockLog, eventName, source) {
     if (eventName === "onLock" && source === "UNCX") {
       if (data.length >= 896) {
         const unlockHex = data.slice(386, 450);
-        const unlockTime = parseInt(unlockHex, 16);
+        const unlockTimeRaw = parseInt(unlockHex, 16);
+        
+        // Handle permanent locks (max uint256 = 0xfff...fff)
+        // JavaScript's max safe timestamp is around year 275760
+        const MAX_SAFE_TIMESTAMP = 8640000000000; // Year 275760 in seconds
+        const unlockTime = unlockTimeRaw > MAX_SAFE_TIMESTAMP ? null : unlockTimeRaw;
         
         const poolAddress = `0x${data.slice(602, 642)}`;
         const token0 = `0x${data.slice(794, 834)}`;
@@ -532,7 +537,8 @@ function extractTokenData(lockLog, eventName, source) {
           isPrimaryToken0 = true;
         }
         
-        console.log(`UNCX LP Lock: token0=${token0}, token1=${token1}, primary=${primaryToken}, pool=${poolAddress}, unlock=${new Date(unlockTime * 1000).toISOString()}`);
+        const unlockDateStr = unlockTime ? new Date(unlockTime * 1000).toISOString() : 'PERMANENT';
+        console.log(`UNCX LP Lock: token0=${token0}, token1=${token1}, primary=${primaryToken}, pool=${poolAddress}, unlock=${unlockDateStr}`);
         
         return { 
           tokenAddress: primaryToken, 
@@ -1430,7 +1436,7 @@ function generateSmartAnalysis(data) {
 }
 
 function formatDuration(unlockTime) {
-  if (!unlockTime) return "Unknown";
+  if (!unlockTime) return "Permanent";
   const now = Math.floor(Date.now() / 1000);
   const diff = unlockTime - now;
   
