@@ -5,6 +5,11 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 
 // Fetch current price for a token
 async function getCurrentPrice(tokenAddress, chainId) {
+  if (!tokenAddress) {
+    console.log('⚠️ Token address is null, skipping price fetch');
+    return null;
+  }
+  
   try {
     const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
     const chainName = chainMap[chainId] || "ethereum";
@@ -106,6 +111,12 @@ async function generateReport(hoursBack = 72) {
     const locksWithPerformance = [];
     
     for (const lock of locks) {
+      // Skip if token address is null
+      if (!lock.token_address) {
+        console.log(`⚠️ Skipping lock ${lock.transaction_id.slice(0,8)}... - no token address`);
+        continue;
+      }
+      
       const currentPrice = await getCurrentPrice(lock.token_address, lock.chain_id);
       
       if (currentPrice && lock.detection_price) {
