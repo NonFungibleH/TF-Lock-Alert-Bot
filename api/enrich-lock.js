@@ -1108,6 +1108,20 @@ function calculateOpportunityScore(data) {
     criticalFailure = true;
   }
   
+  // Critical: Extremely low holder count (likely fake trading between dev wallets)
+  if (holderCount && holderCount < 10) {
+    criticalFailure = true;
+  }
+  
+  // Critical: Very short lock duration (< 30 days) - easy exit scam
+  if (unlockTime) {
+    const now = Math.floor(Date.now() / 1000);
+    const durationDays = (unlockTime - now) / 86400;
+    if (durationDays < 30) {
+      criticalFailure = true;
+    }
+  }
+  
   // === LOCK QUALITY (40 points) ===
   let lockQuality = 0;
   
@@ -1117,11 +1131,11 @@ function calculateOpportunityScore(data) {
     const durationDays = (unlockTime - now) / 86400;
     
     if (durationDays >= 730) lockQuality += 10; // 2+ years
-    else if (durationDays >= 365) lockQuality += 8;
-    else if (durationDays >= 180) lockQuality += 6;
-    else if (durationDays >= 90) lockQuality += 4;
-    else if (durationDays >= 30) lockQuality += 2;
-    else lockQuality += 1;
+    else if (durationDays >= 365) lockQuality += 8; // 1+ year
+    else if (durationDays >= 180) lockQuality += 6; // 6+ months
+    else if (durationDays >= 90) lockQuality += 4;  // 3+ months
+    else if (durationDays >= 30) lockQuality += 2;  // 1+ month
+    else lockQuality += 0; // Less than 30 days = 0 points (too short)
   }
   
   // % of liquidity locked (0-10 pts) - REDUCED from 15
@@ -1171,14 +1185,14 @@ function calculateOpportunityScore(data) {
     else distribution += 0;
   }
   
-  // Holder count (0-10 pts) - more is better
+  // Holder count (0-10 pts) - more is better, HEAVILY penalize low counts
   if (holderCount) {
     if (holderCount >= 1000) distribution += 10;
     else if (holderCount >= 500) distribution += 8;
     else if (holderCount >= 250) distribution += 6;
     else if (holderCount >= 100) distribution += 4;
     else if (holderCount >= 50) distribution += 2;
-    else distribution += 0; // Less than 50 holders = 0 points
+    else distribution += 0; // Less than 50 holders = 0 points (MAJOR RED FLAG)
   }
   
   breakdown.distribution = distribution;
