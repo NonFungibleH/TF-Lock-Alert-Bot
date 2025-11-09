@@ -204,7 +204,7 @@ async function generateReport(hoursBack = 72) {
     lines.push('');
     
     // Lock statistics from past 24 hours
-    const locks24h = await pool.query(`
+    const locks24hStats = await pool.query(`
       SELECT 
         COUNT(*) as total_locks,
         COUNT(*) FILTER (WHERE platform = 'Team Finance') as team_finance,
@@ -217,8 +217,8 @@ async function generateReport(hoursBack = 72) {
       WHERE created_at >= EXTRACT(EPOCH FROM NOW()) - 86400
     `);
     
-    if (locks24h.rows.length > 0) {
-      const stats = locks24h.rows[0];
+    if (locks24hStats.rows.length > 0) {
+      const stats = locks24hStats.rows[0];
       const totalLocks24h = parseInt(stats.total_locks) || 0;
       const tfCount = parseInt(stats.team_finance) || 0;
       const uncxCount = parseInt(stats.uncx) || 0;
