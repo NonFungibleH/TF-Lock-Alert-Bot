@@ -1,4 +1,4 @@
-const axios = require("axios"); 
+const axios = require("axios");
 const { ethers } = require("ethers");
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -1086,56 +1086,64 @@ function calculateOpportunityScore(data) {
   let score = 0;
   const breakdown = {};
   
-  // === CRITICAL FAILURES - Auto-cap score at 20 ===
+  // === CRITICAL FAILURES - Dynamic score caps ===
   const nativeLockedUSD = (nativeLocked && nativePrice) ? (nativeLocked * nativePrice) : 0;
   const ageMinutes = tokenAgeMinutes || poolAgeMinutes || 0;
   const totalTxns = buysSells ? ((buysSells.buys || 0) + (buysSells.sells || 0)) : 0;
   
-  let criticalFailure = false;
+  let scoreCap = 100; // Default: no cap
   
   // Critical: Less than $500 locked
   if (nativeLockedUSD < 500) {
-    criticalFailure = true;
+    scoreCap = Math.min(scoreCap, 20);
   }
   
   // Critical: No volume and very new
   if (volume24h === 0 && ageMinutes < 1440) { // Less than 1 day old with $0 volume
-    criticalFailure = true;
+    scoreCap = Math.min(scoreCap, 30);
   }
   
   // Critical: Less than 10 transactions
   if (totalTxns < 10) {
-    criticalFailure = true;
+    scoreCap = Math.min(scoreCap, 30);
   }
   
-  // Critical: Extremely low holder count (likely fake trading between dev wallets)
+  // Critical: Extremely low holder count (likely fake trading)
   if (holderCount && holderCount < 10) {
-    criticalFailure = true;
+    scoreCap = Math.min(scoreCap, 30); // Brand new projects get some room
   }
   
-  // Critical: Very short lock duration (< 30 days) - easy exit scam
+  // Lock duration caps - more nuanced
   if (unlockTime) {
     const now = Math.floor(Date.now() / 1000);
     const durationDays = (unlockTime - now) / 86400;
-    if (durationDays < 30) {
-      criticalFailure = true;
+    
+    if (durationDays < 7) {
+      scoreCap = Math.min(scoreCap, 20); // < 1 week = very risky
+    } else if (durationDays < 14) {
+      scoreCap = Math.min(scoreCap, 40); // 1-2 weeks = risky
+    } else if (durationDays < 30) {
+      scoreCap = Math.min(scoreCap, 60); // 2-4 weeks = moderate risk
     }
+    // 30+ days = no cap from lock duration
   }
   
   // === LOCK QUALITY (40 points) ===
   let lockQuality = 0;
   
-  // Lock duration (0-10 pts) - REDUCED from 15
+  // Lock duration (0-12 pts) - More nuanced
   if (unlockTime) {
     const now = Math.floor(Date.now() / 1000);
     const durationDays = (unlockTime - now) / 86400;
     
-    if (durationDays >= 730) lockQuality += 10; // 2+ years
-    else if (durationDays >= 365) lockQuality += 8; // 1+ year
-    else if (durationDays >= 180) lockQuality += 6; // 6+ months
-    else if (durationDays >= 90) lockQuality += 4;  // 3+ months
-    else if (durationDays >= 30) lockQuality += 2;  // 1+ month
-    else lockQuality += 0; // Less than 30 days = 0 points (too short)
+    if (durationDays >= 730) lockQuality += 12; // 2+ years
+    else if (durationDays >= 365) lockQuality += 10; // 1+ year
+    else if (durationDays >= 180) lockQuality += 8; // 6+ months
+    else if (durationDays >= 90) lockQuality += 6;  // 3+ months
+    else if (durationDays >= 30) lockQuality += 4;  // 1+ month
+    else if (durationDays >= 14) lockQuality += 2;  // 2+ weeks
+    else if (durationDays >= 7) lockQuality += 1;   // 1+ week
+    else lockQuality += 0; // Less than 7 days = 0 points
   }
   
   // % of liquidity locked (0-10 pts) - REDUCED from 15
@@ -1185,14 +1193,16 @@ function calculateOpportunityScore(data) {
     else distribution += 0;
   }
   
-  // Holder count (0-10 pts) - more is better, HEAVILY penalize low counts
+  // Holder count (0-10 pts) - More forgiving for early projects
   if (holderCount) {
     if (holderCount >= 1000) distribution += 10;
-    else if (holderCount >= 500) distribution += 8;
-    else if (holderCount >= 250) distribution += 6;
-    else if (holderCount >= 100) distribution += 4;
-    else if (holderCount >= 50) distribution += 2;
-    else distribution += 0; // Less than 50 holders = 0 points (MAJOR RED FLAG)
+    else if (holderCount >= 500) distribution += 9;
+    else if (holderCount >= 250) distribution += 8;
+    else if (holderCount >= 100) distribution += 6;
+    else if (holderCount >= 50) distribution += 4;
+    else if (holderCount >= 25) distribution += 2; // Early projects
+    else if (holderCount >= 10) distribution += 1; // Brand new
+    else distribution += 0; // Less than 10 holders = 0 points
   }
   
   breakdown.distribution = distribution;
@@ -1201,14 +1211,18 @@ function calculateOpportunityScore(data) {
   // === MARKET METRICS (15 points) ===
   let marketMetrics = 0;
   
-  // Token age (0-4 pts) - REDUCED from 5
+  // Token age (0-4 pts) - Don't penalize brand new projects
   if (ageMinutes) {
     const ageDays = ageMinutes / (60 * 24);
+    const ageHours = ageMinutes / 60;
+    
     if (ageDays >= 365) marketMetrics += 4;
-    else if (ageDays >= 90) marketMetrics += 3;
-    else if (ageDays >= 30) marketMetrics += 2;
-    else if (ageDays >= 7) marketMetrics += 1;
-    else marketMetrics += 0; // Less than 7 days = 0 points
+    else if (ageDays >= 90) marketMetrics += 4;
+    else if (ageDays >= 30) marketMetrics += 3;
+    else if (ageDays >= 7) marketMetrics += 2;
+    else if (ageDays >= 1) marketMetrics += 2; // 1+ day
+    else if (ageHours >= 1) marketMetrics += 1; // 1+ hour
+    else marketMetrics += 0; // Less than 1 hour = too new
   }
   
   // Buy/sell ratio (0-4 pts)
@@ -1244,9 +1258,9 @@ function calculateOpportunityScore(data) {
   breakdown.marketMetrics = marketMetrics;
   score += marketMetrics;
   
-  // === APPLY CRITICAL FAILURE CAP ===
-  if (criticalFailure && score > 20) {
-    score = Math.min(score, 20);
+  // === APPLY SCORE CAP ===
+  if (score > scoreCap) {
+    score = scoreCap;
   }
   
   return { score, breakdown, criticalFailure };
