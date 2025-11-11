@@ -3,8 +3,31 @@ const { Pool } = require('pg');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 
-// Fetch current price for a token
-async function getCurrentPrice(tokenAddress, chainId) {
+// Fetch current and max price from DexTools
+async function getPriceDataFromDexTools(tokenAddress, chainId) {
+  try {
+    const chainMap = { 1: "ether", 56: "bnb", 137: "polygon", 8453: "base" };
+    const chainName = chainMap[chainId] || "ether";
+    
+    const url = `https://api.dextools.io/v1/token?chain=${chainName}&address=${tokenAddress}`;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    if (response.data && response.data.price) {
+      return {
+        currentPrice: parseFloat(response.data.price),
+        maxPrice: parseFloat(response.data.priceMax || response.data.price),
+        success: true
+      };
+    }
+    return { success: false };
+  } catch (err) {
+    console.error(`DexTools failed for ${tokenAddress}:`, err.message);
+    return { success: false };
+  }
+}
+
+// Fallback: Fetch current price from DexScreener
+async function getCurrentPriceFromDexScreener(tokenAddress, chainId) {
   if (!tokenAddress) {
     console.log('⚠️ Token address is null, skipping price fetch');
     return null;
@@ -38,27 +61,16 @@ async function getCurrentPrice(tokenAddress, chainId) {
         const bestPair = sortedByLiquidity[0];
         
         // DexScreener's priceUsd is ALWAYS the price of baseToken in USD
-        // We need to figure out which token is ours and get the right price
         let price;
         if (bestPair.baseToken?.address?.toLowerCase() === tokenAddress.toLowerCase()) {
-          // Our token is the base token, use priceUsd directly
           price = parseFloat(bestPair.priceUsd);
         } else {
-          // Our token is the quote token
-          // Need to get our token's price from priceNative or calculate it
-          // For quote token: if base/quote pair, and we want quote price,
-          // we need to know the quote token (usually WETH, WBNB, etc) price in USD
-          // But DexScreener doesn't give us quote token price directly
-          // Best option: use priceNative if quote is a known stable/native token
-          
-          // For now, skip pairs where our token is quote token as we can't reliably get price
           console.log(`⚠️ Token ${tokenAddress.slice(0,8)}... is quote token in pair, skipping`);
           return null;
         }
         
         console.log(`Price for ${tokenAddress.slice(0,8)}...: $${price} (liq: $${bestPair.liquidity?.usd || 0})`);
         
-        // Handle very small numbers that might be displayed incorrectly
         if (price && !isNaN(price) && price > 0) {
           return price;
         }
@@ -71,6 +83,36 @@ async function getCurrentPrice(tokenAddress, chainId) {
     console.error(`Failed to get price for ${tokenAddress}:`, err.message);
     return null;
   }
+}
+
+// Combined function: Try DexTools first, fallback to DexScreener
+async function getCurrentPrice(tokenAddress, chainId) {
+  // Try DexTools first
+  const dexToolsData = await getPriceDataFromDexTools(tokenAddress, chainId);
+  if (dexToolsData.success) {
+    console.log(`✅ Got price from DexTools: $${dexToolsData.currentPrice}`);
+    return dexToolsData.currentPrice;
+  }
+  
+  // Fallback to DexScreener
+  console.log(`⚠️ DexTools failed, trying DexScreener...`);
+  return await getCurrentPriceFromDexScreener(tokenAddress, chainId);
+}
+
+// Helper function to calculate ATH % change
+async function calculateATH(tokenAddress, chainId, detectionPrice, currentChange) {
+  try {
+    const dexToolsData = await getPriceDataFromDexTools(tokenAddress, chainId);
+    if (dexToolsData.success && detectionPrice) {
+      const detection = parseFloat(detectionPrice);
+      const maxPrice = dexToolsData.maxPrice;
+      const athChange = ((maxPrice - detection) / detection) * 100;
+      return athChange;
+    }
+  } catch (err) {
+    console.error(`Failed to fetch ATH:`, err.message);
+  }
+  return currentChange; // Default to current if DexTools fails
 }
 
 // Format percentage change with color emoji
@@ -204,23 +246,8 @@ async function generateReport(hoursBack = 72) {
           const sign = '+';
           const priceChange = parseFloat(lock.price_change);
           
-          // Calculate ATH from snapshots
-          let athChange = priceChange; // Default to current if no snapshots
-          try {
-            const snapshots = await pool.query(`
-              SELECT price FROM token_price_snapshots
-              WHERE transaction_id = $1
-              ORDER BY price DESC LIMIT 1
-            `, [lock.transaction_id]);
-            
-            if (snapshots.rows.length > 0 && lock.detection_price) {
-              const detectionPrice = parseFloat(lock.detection_price);
-              const athPrice = parseFloat(snapshots.rows[0].price);
-              athChange = ((athPrice - detectionPrice) / detectionPrice) * 100;
-            }
-          } catch (err) {
-            console.error(`Failed to fetch ATH for ${lock.transaction_id}:`, err.message);
-          }
+          // Calculate ATH using DexTools max price
+          const athChange = await calculateATH(lock.token_address, lock.chain_id, lock.detection_price, priceChange);
           
           lines.push(`${i + 1}. $${lock.token_symbol} ${sign}${priceChange.toFixed(1)}% (ATH since lock ${sign}${athChange.toFixed(0)}%)`);
         }
@@ -235,23 +262,8 @@ async function generateReport(hoursBack = 72) {
           const sign = lock.price_change > 0 ? '+' : '';
           const priceChange = parseFloat(lock.price_change);
           
-          // Calculate ATH from snapshots
-          let athChange = priceChange; // Default to current if no snapshots
-          try {
-            const snapshots = await pool.query(`
-              SELECT price FROM token_price_snapshots
-              WHERE transaction_id = $1
-              ORDER BY price DESC LIMIT 1
-            `, [lock.transaction_id]);
-            
-            if (snapshots.rows.length > 0 && lock.detection_price) {
-              const detectionPrice = parseFloat(lock.detection_price);
-              const athPrice = parseFloat(snapshots.rows[0].price);
-              athChange = ((athPrice - detectionPrice) / detectionPrice) * 100;
-            }
-          } catch (err) {
-            console.error(`Failed to fetch ATH for ${lock.transaction_id}:`, err.message);
-          }
+          // Calculate ATH using DexTools max price
+          const athChange = await calculateATH(lock.token_address, lock.chain_id, lock.detection_price, priceChange);
           
           const athSign = athChange > 0 ? '+' : '';
           lines.push(`${i + 1}. $${lock.token_symbol} ${sign}${priceChange.toFixed(1)}% (ATH since lock ${athSign}${athChange.toFixed(0)}%)`);
@@ -271,23 +283,8 @@ async function generateReport(hoursBack = 72) {
         const sign = lock.price_change > 0 ? '+' : '';
         const priceChange = parseFloat(lock.price_change);
         
-        // Calculate ATH from snapshots
-        let athChange = priceChange; // Default to current if no snapshots
-        try {
-          const snapshots = await pool.query(`
-            SELECT price FROM token_price_snapshots
-            WHERE transaction_id = $1
-            ORDER BY price DESC LIMIT 1
-          `, [lock.transaction_id]);
-          
-          if (snapshots.rows.length > 0 && lock.detection_price) {
-            const detectionPrice = parseFloat(lock.detection_price);
-            const athPrice = parseFloat(snapshots.rows[0].price);
-            athChange = ((athPrice - detectionPrice) / detectionPrice) * 100;
-          }
-        } catch (err) {
-          console.error(`Failed to fetch ATH for ${lock.transaction_id}:`, err.message);
-        }
+        // Calculate ATH using DexTools max price
+        const athChange = await calculateATH(lock.token_address, lock.chain_id, lock.detection_price, priceChange);
         
         const athSign = athChange > 0 ? '+' : '';
         lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji} ${sign}${priceChange.toFixed(1)}% (ATH since lock ${athSign}${athChange.toFixed(0)}%)`);
