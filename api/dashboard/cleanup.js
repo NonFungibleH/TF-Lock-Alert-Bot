@@ -1,6 +1,6 @@
 const { Pool } = require('pg');
 
-module.exports = async (req, res) => {
+module.exports = async (req, res) => { 
   try {
     // Auth check
     const authHeader = req.headers.authorization || req.headers.Authorization;
