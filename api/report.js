@@ -156,12 +156,21 @@ async function generateReport(hoursBack = 72) {
       return `📊 **Lock Performance Report**\n\nFound ${locks.length} locks but couldn't fetch current prices.`;
     }
     
-    // Sort by performance (best to worst)
-    const sorted = [...locksWithPerformance].sort((a, b) => b.price_change - a.price_change);
+    // Filter out stablecoins
+    const stablecoins = ['USDT', 'USDC', 'DAI', 'USDB', 'USDBC', 'BUSD', 'TUSD', 'USDP', 'GUSD', 'LUSD', 'FRAX'];
+    const filteredPerformance = locksWithPerformance.filter(lock => 
+      !stablecoins.includes(lock.token_symbol.toUpperCase())
+    );
+    
+    const sorted = [...filteredPerformance].sort((a, b) => b.price_change - a.price_change);
     
     // Split into 24h and 24-72h
     const locks24h = sorted.filter(l => l.hours_ago < 24);
     const locks2472h = sorted.filter(l => l.hours_ago >= 24);
+    
+    // Split 24h into gainers and losers
+    const gainers24h = locks24h.filter(l => l.price_change > 0);
+    const losers24h = locks24h.filter(l => l.price_change <= 0).sort((a, b) => b.price_change - a.price_change); // Best to worst (least negative first)
     
     // Calculate stats
     const profitable = sorted.filter(l => l.price_change > 0);
@@ -182,80 +191,73 @@ async function generateReport(hoursBack = 72) {
     lines.push(`${new Date().toLocaleDateString()} | Past ${hoursBack}h`);
     lines.push('');
     
-    // Section 1: Past 24 hours (with hourly breakdown)
+    // Section 1: Past 24 hours - Split into Gainers and Losers
     if (locks24h.length > 0) {
       lines.push('⏰ **Past 24 Hours**');
       lines.push('');
       
-      for (let i = 0; i < locks24h.length; i++) {
-        const lock = locks24h[i];
-        const changeEmoji = lock.price_change > 0 ? '🟢' : lock.price_change < 0 ? '🔴' : '⚪';
-        const sign = lock.price_change > 0 ? '+' : '';
-        const priceChange = parseFloat(lock.price_change);
-        const scoreStr = lock.lock_score ? ` (${lock.lock_score}/100)` : '';
-        
-        lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji} ${sign}${priceChange.toFixed(1)}%${scoreStr}`);
-        
-        // Fetch hourly snapshots for this lock
-        try {
-          const snapshots = await pool.query(`
-            SELECT hours_after_lock, price
-            FROM token_price_snapshots
-            WHERE transaction_id = $1
-            ORDER BY hours_after_lock ASC
-          `, [lock.transaction_id]);
+      // Gainers subsection
+      if (gainers24h.length > 0) {
+        lines.push('**Gainers:**');
+        for (let i = 0; i < gainers24h.length; i++) {
+          const lock = gainers24h[i];
+          const sign = '+';
+          const priceChange = parseFloat(lock.price_change);
           
-          if (snapshots.rows.length > 0 && lock.detection_price) {
-            const detectionPrice = parseFloat(lock.detection_price);
-            const hourlyData = [];
-            let peakChange = -Infinity;
-            let peakHour = 0;
+          // Calculate ATH from snapshots
+          let athChange = priceChange; // Default to current if no snapshots
+          try {
+            const snapshots = await pool.query(`
+              SELECT price FROM token_price_snapshots
+              WHERE transaction_id = $1
+              ORDER BY price DESC LIMIT 1
+            `, [lock.transaction_id]);
             
-            // Get specific hours: 1, 3, 6, 12, and latest
-            const hoursToShow = [1, 3, 6, 12];
-            const latestHour = Math.max(...snapshots.rows.map(s => s.hours_after_lock));
-            
-            for (const targetHour of hoursToShow) {
-              // Find closest snapshot to target hour
-              const closest = snapshots.rows.reduce((prev, curr) => {
-                return Math.abs(curr.hours_after_lock - targetHour) < Math.abs(prev.hours_after_lock - targetHour) ? curr : prev;
-              });
-              
-              if (Math.abs(closest.hours_after_lock - targetHour) <= 1) {
-                const price = parseFloat(closest.price);
-                const change = ((price - detectionPrice) / detectionPrice) * 100;
-                const changeSign = change > 0 ? '+' : '';
-                hourlyData.push(`${targetHour}h: ${changeSign}${change.toFixed(0)}%`);
-                
-                if (change > peakChange) {
-                  peakChange = change;
-                  peakHour = closest.hours_after_lock;
-                }
-              }
+            if (snapshots.rows.length > 0 && lock.detection_price) {
+              const detectionPrice = parseFloat(lock.detection_price);
+              const athPrice = parseFloat(snapshots.rows[0].price);
+              athChange = ((athPrice - detectionPrice) / detectionPrice) * 100;
             }
-            
-            // Check all snapshots for actual peak
-            snapshots.rows.forEach(snap => {
-              const price = parseFloat(snap.price);
-              const change = ((price - detectionPrice) / detectionPrice) * 100;
-              if (change > peakChange) {
-                peakChange = change;
-                peakHour = snap.hours_after_lock;
-              }
-            });
-            
-            if (hourlyData.length > 0) {
-              const peakSign = peakChange > 0 ? '+' : '';
-              const emoji = peakChange > priceChange ? '📈' : priceChange < 0 ? '📉' : '📊';
-              lines.push(`   ${emoji} ${hourlyData.join(' | ')} | Peak: ${peakSign}${peakChange.toFixed(0)}% at ${peakHour}h`);
-            }
+          } catch (err) {
+            console.error(`Failed to fetch ATH for ${lock.transaction_id}:`, err.message);
           }
-        } catch (err) {
-          console.error(`Failed to fetch hourly data for ${lock.transaction_id}:`, err.message);
+          
+          lines.push(`${i + 1}. $${lock.token_symbol} ${sign}${priceChange.toFixed(1)}% (ATH since lock ${sign}${athChange.toFixed(0)}%)`);
         }
+        lines.push('');
       }
       
-      lines.push('');
+      // Losers subsection
+      if (losers24h.length > 0) {
+        lines.push('**Losers:**');
+        for (let i = 0; i < losers24h.length; i++) {
+          const lock = losers24h[i];
+          const sign = lock.price_change > 0 ? '+' : '';
+          const priceChange = parseFloat(lock.price_change);
+          
+          // Calculate ATH from snapshots
+          let athChange = priceChange; // Default to current if no snapshots
+          try {
+            const snapshots = await pool.query(`
+              SELECT price FROM token_price_snapshots
+              WHERE transaction_id = $1
+              ORDER BY price DESC LIMIT 1
+            `, [lock.transaction_id]);
+            
+            if (snapshots.rows.length > 0 && lock.detection_price) {
+              const detectionPrice = parseFloat(lock.detection_price);
+              const athPrice = parseFloat(snapshots.rows[0].price);
+              athChange = ((athPrice - detectionPrice) / detectionPrice) * 100;
+            }
+          } catch (err) {
+            console.error(`Failed to fetch ATH for ${lock.transaction_id}:`, err.message);
+          }
+          
+          const athSign = athChange > 0 ? '+' : '';
+          lines.push(`${i + 1}. $${lock.token_symbol} ${sign}${priceChange.toFixed(1)}% (ATH since lock ${athSign}${athChange.toFixed(0)}%)`);
+        }
+        lines.push('');
+      }
     }
     
     // Section 2: 24-72 hours
@@ -263,14 +265,33 @@ async function generateReport(hoursBack = 72) {
       lines.push('📅 **24-72 Hours Ago**');
       lines.push('');
       
-      locks2472h.forEach((lock, i) => {
+      for (let i = 0; i < locks2472h.length; i++) {
+        const lock = locks2472h[i];
         const changeEmoji = lock.price_change > 0 ? '🟢' : lock.price_change < 0 ? '🔴' : '⚪';
         const sign = lock.price_change > 0 ? '+' : '';
         const priceChange = parseFloat(lock.price_change);
-        const scoreStr = lock.lock_score ? ` (${lock.lock_score}/100)` : '';
         
-        lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji} ${sign}${priceChange.toFixed(1)}%${scoreStr}`);
-      });
+        // Calculate ATH from snapshots
+        let athChange = priceChange; // Default to current if no snapshots
+        try {
+          const snapshots = await pool.query(`
+            SELECT price FROM token_price_snapshots
+            WHERE transaction_id = $1
+            ORDER BY price DESC LIMIT 1
+          `, [lock.transaction_id]);
+          
+          if (snapshots.rows.length > 0 && lock.detection_price) {
+            const detectionPrice = parseFloat(lock.detection_price);
+            const athPrice = parseFloat(snapshots.rows[0].price);
+            athChange = ((athPrice - detectionPrice) / detectionPrice) * 100;
+          }
+        } catch (err) {
+          console.error(`Failed to fetch ATH for ${lock.transaction_id}:`, err.message);
+        }
+        
+        const athSign = athChange > 0 ? '+' : '';
+        lines.push(`${i + 1}. $${lock.token_symbol} ${changeEmoji} ${sign}${priceChange.toFixed(1)}% (ATH since lock ${athSign}${athChange.toFixed(0)}%)`);
+      }
       
       lines.push('');
     }
