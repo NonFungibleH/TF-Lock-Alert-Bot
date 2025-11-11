@@ -1263,7 +1263,7 @@ function calculateOpportunityScore(data) {
     score = scoreCap;
   }
   
-  return { score, breakdown, criticalFailure };
+  return { score, breakdown, scoreCap };
 }
 
 // Generate smart AI-like analysis
