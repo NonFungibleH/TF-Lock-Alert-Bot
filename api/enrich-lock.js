@@ -2721,7 +2721,7 @@ if (tokenData.isLPLock) {
         enriched.liquidity || null,
         score || null,
         lockedPercent ? parseFloat(lockedPercent) : null,
-        (enriched.nativeTokenAmount && nativePrice) ? (enriched.nativeTokenAmount * nativePrice) : null,
+        (actualNativeLocked && nativePrice) ? (actualNativeLocked * nativePrice) : null,
         tokenInfo.symbol || null,
         Math.floor(Date.now() / 1000),
         req.body.txHash
