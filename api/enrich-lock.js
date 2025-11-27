@@ -1,3 +1,4 @@
+
 const axios = require("axios");
 const { ethers } = require("ethers");
 
@@ -724,155 +725,6 @@ async function getPoolState(poolAddress, chainId) {
     };
   } catch (err) {
     console.error("Failed to get pool state:", err.message);
-    return null;
-  }
-}
-
-// NEW FUNCTION: Add this to your enrich-lock.js file
-// Place it after the getPoolState function (around line 600)
-
-async function getLPTokenMintAmount(lpTokenAddress, lpTokenAmount, chainId, lockBlockNumber) {
-  try {
-    const rpcUrls = RPC_URLS[chainId];
-    if (!rpcUrls || rpcUrls.length === 0) return null;
-    
-    const provider = new ethers.providers.JsonRpcProvider(rpcUrls[0]);
-    
-    // Uniswap V2 Pair ABI - Mint event
-    const PAIR_ABI = [
-      "event Mint(address indexed sender, uint amount0, uint amount1)",
-      "function token0() view returns (address)",
-      "function token1() view returns (address)",
-      "function totalSupply() view returns (uint256)"
-    ];
-    
-    const pairContract = new ethers.Contract(lpTokenAddress, PAIR_ABI, provider);
-    
-    // Get token addresses to identify which is native
-    const [token0, token1] = await Promise.all([
-      pairContract.token0(),
-      pairContract.token1()
-    ]);
-    
-    console.log(`LP Pair: token0=${token0}, token1=${token1}`);
-    
-    // Find Mint events in the blocks leading up to the lock
-    // Search backwards from lock block to find the relevant mint
-    const searchBlocks = 1000; // Search last 1000 blocks before lock (roughly 3-4 hours on most chains)
-    const fromBlock = Math.max(0, lockBlockNumber - searchBlocks);
-    
-    console.log(`Searching for Mint events from block ${fromBlock} to ${lockBlockNumber}`);
-    
-    const mintEvents = await pairContract.queryFilter(
-      pairContract.filters.Mint(),
-      fromBlock,
-      lockBlockNumber
-    );
-    
-    console.log(`Found ${mintEvents.length} Mint events`);
-    
-    if (mintEvents.length === 0) {
-      console.log('No Mint events found in recent blocks');
-      return null;
-    }
-    
-    // Get the total supply at lock time to calculate the percentage
-    const totalSupplyAtLock = await pairContract.totalSupply({ blockTag: lockBlockNumber });
-    const lpTokenAmountBN = BigInt(lpTokenAmount.toString());
-    
-    console.log(`LP tokens locked: ${lpTokenAmountBN.toString()}`);
-    console.log(`Total supply at lock: ${totalSupplyAtLock.toString()}`);
-    
-    // Find the mint event that matches our locked LP amount most closely
-    let bestMatch = null;
-    let bestMatchDiff = BigInt("999999999999999999999999"); // Very large number
-    
-    for (const event of mintEvents) {
-      const amount0 = event.args.amount0;
-      const amount1 = event.args.amount1;
-      
-      // Get LP supply before and after this mint to calculate LP minted
-      try {
-        const totalSupplyBefore = await pairContract.totalSupply({ 
-          blockTag: event.blockNumber - 1 
-        });
-        const totalSupplyAfter = await pairContract.totalSupply({ 
-          blockTag: event.blockNumber 
-        });
-        const lpMinted = totalSupplyAfter.sub(totalSupplyBefore);
-        
-        // Calculate difference from our locked amount
-        const diff = lpMinted.gt(lpTokenAmountBN) 
-          ? lpMinted.sub(lpTokenAmountBN)
-          : lpTokenAmountBN.sub(lpMinted);
-        
-        // If this is a closer match, save it
-        if (diff.lt(bestMatchDiff)) {
-          bestMatchDiff = diff;
-          bestMatch = {
-            amount0: amount0,
-            amount1: amount1,
-            lpMinted: lpMinted,
-            blockNumber: event.blockNumber,
-            transactionHash: event.transactionHash
-          };
-          
-          console.log(`New best match: tx=${event.transactionHash.slice(0, 10)}..., lpMinted=${ethers.utils.formatEther(lpMinted)}, diff=${ethers.utils.formatEther(diff)}`);
-        }
-        
-        // If we found an exact match (or very close), stop searching
-        if (diff.lt(ethers.utils.parseEther("0.001"))) {
-          console.log(`Found exact match!`);
-          break;
-        }
-      } catch (err) {
-        console.error(`Error processing mint event ${event.transactionHash}:`, err.message);
-        continue;
-      }
-    }
-    
-    if (!bestMatch) {
-      console.log('Could not match LP mint to lock amount');
-      return null;
-    }
-    
-    console.log(`✅ Best match mint: ${bestMatch.transactionHash}`);
-    
-    // Convert to readable numbers
-    const amount0Readable = Number(ethers.utils.formatEther(bestMatch.amount0));
-    const amount1Readable = Number(ethers.utils.formatEther(bestMatch.amount1));
-    const lpMintedReadable = Number(ethers.utils.formatEther(bestMatch.lpMinted));
-    
-    console.log(`Amount0: ${amount0Readable} ETH, Amount1: ${amount1Readable} tokens`);
-    console.log(`LP Minted: ${lpMintedReadable}`);
-    
-    // Identify which amount is the native token
-    const wrappedNativeTokens = {
-      1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
-      56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
-      137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC
-      8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
-    };
-    
-    const nativeAddress = wrappedNativeTokens[chainId]?.toLowerCase();
-    const isToken0Native = token0.toLowerCase() === nativeAddress;
-    
-    const nativeAmount = isToken0Native ? amount0Readable : amount1Readable;
-    const tokenAmount = isToken0Native ? amount1Readable : amount0Readable;
-    
-    console.log(`✅ Native amount from mint: ${nativeAmount}`);
-    console.log(`✅ Token amount from mint: ${tokenAmount}`);
-    
-    return {
-      nativeAmount,
-      tokenAmount,
-      lpMinted: lpMintedReadable,
-      mintTxHash: bestMatch.transactionHash,
-      isToken0Native
-    };
-    
-  } catch (err) {
-    console.error('Failed to get LP mint amount:', err.message);
     return null;
   }
 }
@@ -2111,36 +1963,13 @@ module.exports = async (req, res) => {
     // 1. Token info
     parts.push("💎 **Token info**");
     parts.push(`Token: $${tokenInfo.symbol}`);
-   // Show token age if available
-const tokenAge = tokenCreationTime ? formatContractAge(tokenCreationTime * 1000) : null;
-const poolAge = formatContractAge(enriched.pairCreatedAt);
-
-if (tokenAge && poolAge) {
-  // Both available - show comparison
-  parts.push(`Token Age: ${tokenAge}`);
-  parts.push(`Pool Age: ${poolAge}`);
-  
-  // Calculate age difference
-  if (tokenCreationTime && enriched.pairCreatedAt) {
-    const tokenTimestamp = tokenCreationTime * 1000;
-    const poolTimestamp = new Date(enriched.pairCreatedAt).getTime();
-    const diffMs = tokenTimestamp - poolTimestamp;
-    const diffMinutes = Math.abs(diffMs / (1000 * 60));
     
-    // If created within 10 minutes of each other, note it
-    if (diffMinutes < 10) {
-      parts.push(`⚡ Fresh launch - token & pool created together`);
-    } else if (tokenTimestamp < poolTimestamp - (1000 * 60 * 60 * 24 * 30)) {
-      // Token is 30+ days older than pool
-      parts.push(`⚠️ Old token, new pool - possible migration or new listing`);
+    // Show token age if available
+    const tokenAge = tokenCreationTime ? formatContractAge(tokenCreationTime * 1000) : null;
+    if (tokenAge) {
+      parts.push(`Token Age: ${tokenAge}`);
     }
-  }
-} else if (tokenAge) {
-  parts.push(`Token Age: ${tokenAge}`);
-} else if (poolAge) {
-  parts.push(`Pool Age: ${poolAge}`);
-}
-
+    
     // Show pool age if available
     const poolAge = formatContractAge(enriched.pairCreatedAt);
     if (poolAge) {
@@ -2316,114 +2145,45 @@ if (tokenAge && poolAge) {
       }
     }
     
-   // Show native token locked for LP locks (important metric that can't be manipulated)
-if (tokenData.isLPLock) {
-  let actualNativeLocked = null;
-  let mintData = null;
-  
-  // METHOD 1: Get the actual amount from the LP mint transaction (MOST ACCURATE)
-  if (tokenData.amount) {
-    try {
-      // Get the lock block number from the transaction
-let lockBlockNumber = null;
-
-// Try to get from body first (passed from webhook)
-if (req.body.blockNumber) {
-  lockBlockNumber = req.body.blockNumber;
-  console.log(`Lock block number from webhook: ${lockBlockNumber}`);
-}
-// Otherwise try to fetch it
-else if (txHash) {
-  const rpcUrls = RPC_URLS[chainId];
-  if (rpcUrls && rpcUrls.length > 0) {
-    const provider = new ethers.providers.JsonRpcProvider(rpcUrls[0]);
-    const tx = await provider.getTransaction(txHash);
-    if (tx && tx.blockNumber) {
-      lockBlockNumber = tx.blockNumber;
-      console.log(`Lock block number from RPC: ${lockBlockNumber}`);
-    }
-  }
-}
+    // Show native token locked for LP locks (important metric that can't be manipulated)
+    if (tokenData.isLPLock) {
+      let actualNativeLocked = null;
       
-      if (lockBlockNumber) {
-        // Determine the LP token address
-        let lpTokenAddress = null;
+      // Calculate actual native locked based on locked liquidity %
+      if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0 && rawLiqPercent) {
+        actualNativeLocked = enriched.nativeTokenAmount * (rawLiqPercent / 100);
+      }
+      // Or use calculated paired token amounts for V3
+      else if (pairedTokenAmount && pairedTokenInfo) {
+        const wrappedNativeTokens = {
+          1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
+          56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
+          137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC/WPOL
+          8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
+        };
         
-        // For UNCX V3 (onLock), the LP token is the poolAddress
-        if (tokenData.poolAddress) {
-          lpTokenAddress = tokenData.poolAddress;
-        }
-        // For Team Finance V2/UNCX V2 (onDeposit/onNewLock), it's the tokenAddress in the event
-        else if (lockLog && lockLog.address) {
-          lpTokenAddress = lockLog.address;
-        }
+        const pairedTokenLower = tokenData.token1?.toLowerCase();
+        const nativeTokenAddress = wrappedNativeTokens[chainId]?.toLowerCase();
         
-        if (lpTokenAddress) {
-          console.log(`Reading LP mint for token: ${lpTokenAddress}`);
-          mintData = await getLPTokenMintAmount(
-            lpTokenAddress,
-            tokenData.amount,
-            chainId,
-            lockBlockNumber
-          );
-          
-          if (mintData) {
-            actualNativeLocked = mintData.nativeAmount;
-            console.log(`✅ Native locked from mint transaction: ${actualNativeLocked} ${nativeSymbol}`);
-          } else {
-            console.log(`⚠️ Could not find matching LP mint transaction`);
-          }
+        if (pairedTokenLower === nativeTokenAddress) {
+          actualNativeLocked = pairedTokenAmount;
         }
       }
-    } catch (mintErr) {
-      console.error(`Failed to get LP mint data:`, mintErr.message);
-    }
-  }
-  
-  // METHOD 2: Fallback - Calculate from current pool state (LESS ACCURATE - pool may have grown)
-  if (!actualNativeLocked) {
-    if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0 && rawLiqPercent) {
-      actualNativeLocked = enriched.nativeTokenAmount * (rawLiqPercent / 100);
-      console.log(`⚠️ Using fallback calculation from current pool: ${actualNativeLocked} ${nativeSymbol}`);
-    }
-    // Or use calculated paired token amounts for V3
-    else if (pairedTokenAmount && pairedTokenInfo) {
-      const wrappedNativeTokens = {
-        1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
-        56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
-        137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC/WPOL
-        8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
-      };
       
-      const pairedTokenLower = tokenData.token1?.toLowerCase();
-      const nativeTokenAddress = wrappedNativeTokens[chainId]?.toLowerCase();
-      
-      if (pairedTokenLower === nativeTokenAddress) {
-        actualNativeLocked = pairedTokenAmount;
-        console.log(`✅ Using V3 position calculation: ${actualNativeLocked} ${nativeSymbol}`);
+      // Display native locked if we have it
+      if (actualNativeLocked && actualNativeLocked > 0) {
+        const nativeStr = actualNativeLocked >= 1 
+          ? actualNativeLocked.toFixed(2)
+          : actualNativeLocked.toFixed(4);
+        
+        if (nativePrice) {
+          const nativeUsdValue = (actualNativeLocked * nativePrice).toFixed(2);
+          parts.push(`Native Locked: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
+        } else {
+          parts.push(`Native Locked: ${nativeStr} ${nativeSymbol}`);
+        }
       }
     }
-  }
-  
-  // Display native locked if we have it
-  if (actualNativeLocked && actualNativeLocked > 0) {
-    const nativeStr = actualNativeLocked >= 1 
-      ? actualNativeLocked.toFixed(2)
-      : actualNativeLocked.toFixed(4);
-    
-    if (nativePrice) {
-      const nativeUsdValue = (actualNativeLocked * nativePrice).toFixed(2);
-      parts.push(`Native Locked: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
-    } else {
-      parts.push(`Native Locked: ${nativeStr} ${nativeSymbol}`);
-    }
-    
-    // Add a note if we had to use fallback calculation
-    if (!mintData) {
-      console.log(`⚠️ Note: Native locked calculated from current pool state, not original mint`);
-    }
-  }
-}
     
     parts.push(`Duration: ${duration}`);
     parts.push(`Platform: ${source}`);
@@ -2726,7 +2486,7 @@ else if (txHash) {
         enriched.liquidity || null,
         score || null,
         lockedPercent ? parseFloat(lockedPercent) : null,
-        (actualNativeLocked && nativePrice) ? (actualNativeLocked * nativePrice) : null,
+        (enriched.nativeTokenAmount && nativePrice) ? (enriched.nativeTokenAmount * nativePrice) : null,
         tokenInfo.symbol || null,
         Math.floor(Date.now() / 1000),
         req.body.txHash
