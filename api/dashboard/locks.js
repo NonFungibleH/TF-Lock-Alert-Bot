@@ -7,13 +7,23 @@ module.exports = async (req, res) => {
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
     });
     
-    // Query all locks with all available data
+    // First, let's check what columns actually exist
+    const schemaCheck = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'lock_alerts'
+      ORDER BY ordinal_position
+    `);
+    
+    console.log('Available columns:', schemaCheck.rows.map(r => r.column_name));
+    
+    // Query all locks with all available data - using correct column names
     const result = await pool.query(`
       SELECT 
         transaction_id,
-        chain,
+        chain_name,
         source,
-        type,
+        lock_type,
         token_symbol,
         token_address,
         detection_price,
@@ -37,9 +47,9 @@ module.exports = async (req, res) => {
     const locks = result.rows.map(lock => ({
       'Transaction ID': lock.transaction_id,
       'Time': new Date(lock.created_at).toLocaleString(),
-      'Chain': lock.chain,
+      'Chain': lock.chain_name,
       'Source': lock.source,
-      'Type': lock.type,
+      'Type': lock.lock_type,
       'Token': lock.token_symbol || 'Unknown',
       'Token Address': lock.token_address,
       'Score': lock.lock_score || 0,
