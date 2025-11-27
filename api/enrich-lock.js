@@ -2111,13 +2111,36 @@ module.exports = async (req, res) => {
     // 1. Token info
     parts.push("💎 **Token info**");
     parts.push(`Token: $${tokenInfo.symbol}`);
+   // Show token age if available
+const tokenAge = tokenCreationTime ? formatContractAge(tokenCreationTime * 1000) : null;
+const poolAge = formatContractAge(enriched.pairCreatedAt);
+
+if (tokenAge && poolAge) {
+  // Both available - show comparison
+  parts.push(`Token Age: ${tokenAge}`);
+  parts.push(`Pool Age: ${poolAge}`);
+  
+  // Calculate age difference
+  if (tokenCreationTime && enriched.pairCreatedAt) {
+    const tokenTimestamp = tokenCreationTime * 1000;
+    const poolTimestamp = new Date(enriched.pairCreatedAt).getTime();
+    const diffMs = tokenTimestamp - poolTimestamp;
+    const diffMinutes = Math.abs(diffMs / (1000 * 60));
     
-    // Show token age if available
-    const tokenAge = tokenCreationTime ? formatContractAge(tokenCreationTime * 1000) : null;
-    if (tokenAge) {
-      parts.push(`Token Age: ${tokenAge}`);
+    // If created within 10 minutes of each other, note it
+    if (diffMinutes < 10) {
+      parts.push(`⚡ Fresh launch - token & pool created together`);
+    } else if (tokenTimestamp < poolTimestamp - (1000 * 60 * 60 * 24 * 30)) {
+      // Token is 30+ days older than pool
+      parts.push(`⚠️ Old token, new pool - possible migration or new listing`);
     }
-    
+  }
+} else if (tokenAge) {
+  parts.push(`Token Age: ${tokenAge}`);
+} else if (poolAge) {
+  parts.push(`Pool Age: ${poolAge}`);
+}
+
     // Show pool age if available
     const poolAge = formatContractAge(enriched.pairCreatedAt);
     if (poolAge) {
