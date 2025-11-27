@@ -2325,20 +2325,25 @@ if (tokenData.isLPLock) {
   if (tokenData.amount) {
     try {
       // Get the lock block number from the transaction
-      let lockBlockNumber = null;
-      
-      // If we have txHash, get the block number
-      if (txHash) {
-        const rpcUrls = RPC_URLS[chainId];
-        if (rpcUrls && rpcUrls.length > 0) {
-          const provider = new ethers.providers.JsonRpcProvider(rpcUrls[0]);
-          const tx = await provider.getTransaction(txHash);
-          if (tx && tx.blockNumber) {
-            lockBlockNumber = tx.blockNumber;
-            console.log(`Lock block number: ${lockBlockNumber}`);
-          }
-        }
-      }
+let lockBlockNumber = null;
+
+// Try to get from body first (passed from webhook)
+if (req.body.blockNumber) {
+  lockBlockNumber = req.body.blockNumber;
+  console.log(`Lock block number from webhook: ${lockBlockNumber}`);
+}
+// Otherwise try to fetch it
+else if (txHash) {
+  const rpcUrls = RPC_URLS[chainId];
+  if (rpcUrls && rpcUrls.length > 0) {
+    const provider = new ethers.providers.JsonRpcProvider(rpcUrls[0]);
+    const tx = await provider.getTransaction(txHash);
+    if (tx && tx.blockNumber) {
+      lockBlockNumber = tx.blockNumber;
+      console.log(`Lock block number from RPC: ${lockBlockNumber}`);
+    }
+  }
+}
       
       if (lockBlockNumber) {
         // Determine the LP token address
