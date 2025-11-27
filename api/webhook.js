@@ -157,19 +157,17 @@ module.exports = async (req, res) => {
     console.log(`✅ Basic Telegram message sent (ID: ${messageId})`);
     
     // PART 3: Trigger enrichment via separate endpoint
-// Build enrichment URL - use production domain
-const enrichmentPayload = {
-  messageId,
-  txHash,
-  chainId,
-  lockLog,
-  eventName,
-  source,
-  explorerLink,
-  chain: chain.name,
-  txData: body.txData || null,  // ADD THIS - pass through if available
-  blockNumber: body.confirmed?.[0]?.blockNumber || null  // ADD THIS - for LP mint lookup
-};
+    // Build enrichment URL - use production domain
+    const enrichmentPayload = {
+      messageId,
+      txHash,
+      chainId,
+      lockLog,
+      eventName,
+      source,
+      explorerLink,
+      chain: chain.name
+    };
     
     try {
       const baseUrl = process.env.BASE_URL || 'https://tf-lock-alert-bot.vercel.app';
