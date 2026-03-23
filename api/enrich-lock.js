@@ -849,148 +849,136 @@ async function enrichTokenData(tokenAddress, chainId, poolAddress = null) {
     
     console.log(`Fetching enrichment data for ${tokenAddress} on ${chainName}`);
     
+    // Run all three data sources in parallel
+    const nativeTokenAddresses = {
+      1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+      56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
+      137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',
+      8453: '0x4200000000000000000000000000000000000006'
+    };
+
+    const [dexScreenerResult, dexToolsResult, goPlusResult] = await Promise.allSettled([
+      // DexScreener
+      axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 7000 }),
+      // DexTools
+      axios.get(`https://www.dextools.io/shared/search/pair?query=${tokenAddress}`, {
+        timeout: 7000,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      }),
+      // GoPlus
+      axios.get(`https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${tokenAddress}`, { timeout: 5000 })
+    ]);
+
     let dexScreenerData = null;
     let dexToolsData = null;
     let goPlusData = null;
-    
-    // Try DexScreener first
-    try {
-      console.log(`Trying DexScreener API...`);
-      const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
-      const response = await axios.get(url, { timeout: 7000 });
-      
-      if (response.data?.pairs && response.data.pairs.length > 0) {
-        const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
-        
-        if (chainPairs.length > 0) {
-          const bestPair = chainPairs.sort((a, b) => 
-            (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
-          )[0];
-          
-          console.log(`✅ DexScreener: price=$${bestPair.priceUsd}, liq=$${bestPair.liquidity?.usd}`);
-          
-          const nativeTokenAddresses = {
-            1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
-            56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
-            137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',
-            8453: '0x4200000000000000000000000000000000000006'
-          };
-          
-          const quoteTokenAddress = bestPair.quoteToken?.address?.toLowerCase();
-          const nativeAddress = nativeTokenAddresses[chainId]?.toLowerCase();
-          const isNativePair = quoteTokenAddress === nativeAddress;
-          
-          const nativeTokenAmount = isNativePair && bestPair.liquidity?.quote 
-            ? parseFloat(bestPair.liquidity.quote) 
-            : null;
-          
-          if (nativeTokenAmount) {
-            console.log(`✅ Native token in pair: ${nativeTokenAmount} ${bestPair.quoteToken?.symbol}`);
-          }
-          
-          dexScreenerData = {
-            price: bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : null,
-            marketCap: bestPair.marketCap || null,
-            liquidity: bestPair.liquidity?.usd || null,
-            nativeTokenAmount: nativeTokenAmount,
-            pairName: `${bestPair.baseToken?.symbol || ''}/${bestPair.quoteToken?.symbol || ''}`,
-            pairAddress: bestPair.pairAddress || null,
-            pairCreatedAt: bestPair.pairCreatedAt || null,
-            // NEW: Extract price changes
-            priceChange5m: bestPair.priceChange?.m5 || null,
-            priceChange1h: bestPair.priceChange?.h1 || null,
-            priceChange6h: bestPair.priceChange?.h6 || null,
-            priceChange24h: bestPair.priceChange?.h24 || null,
-            // NEW: Extract volume
-            volume24h: bestPair.volume?.h24 || null,
-            buyVolume24h: bestPair.volume?.h24Buy || null,
-            sellVolume24h: bestPair.volume?.h24Sell || null,
-            // NEW: Extract buys/sells
-            txns24h: bestPair.txns?.h24 || null,
-            // NEW: Extract makers (unique traders)
-            makers24h: {
-              buyers: bestPair.txns?.h24?.buyers || null,
-              sellers: bestPair.txns?.h24?.sellers || null
-            },
-            source: 'DexScreener'
-          };
-        }
-      }
-      
-      if (!dexScreenerData) {
-        console.log(`DexScreener: No pairs for ${chainName}`);
-      }
-    } catch (err) {
-      console.log(`DexScreener failed: ${err.message}`);
-    }
-    
-    // Try DexTools (for additional metrics like txns, buy/sell tax)
-    try {
-      console.log(`Trying DexTools API...`);
-      const url = `https://www.dextools.io/shared/search/pair?query=${tokenAddress}`;
-      const response = await axios.get(url, { 
-        timeout: 7000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      
-      if (response.data?.results && response.data.results.length > 0) {
-        const chainPairs = response.data.results.filter(r => {
-          const pairChain = r.id.chain?.toLowerCase();
-          return pairChain === chainName || 
-                 (chainName === 'bsc' && pairChain === 'bnb') ||
-                 (chainName === 'polygon' && pairChain === 'matic');
-        });
-        
-        if (chainPairs.length > 0) {
-          const bestPair = chainPairs[0];
-          console.log(`✅ DexTools: price=$${bestPair.price}`);
-          
-          dexToolsData = {
-            price: bestPair.price || null,
-            marketCap: bestPair.metrics?.marketCap || null,
-            liquidity: bestPair.metrics?.liquidity || null,
-            totalTransactions: bestPair.metrics?.transactions || null,
-            buyTax: bestPair.metrics?.buyTax || null,
-            sellTax: bestPair.metrics?.sellTax || null,
-            pairName: bestPair.name || null,
-            source: 'DexTools'
-          };
-          
-          if (dexToolsData.totalTransactions) {
-            console.log(`✅ DexTools: ${dexToolsData.totalTransactions} total transactions`);
-          }
-          if (dexToolsData.buyTax !== null || dexToolsData.sellTax !== null) {
-            console.log(`✅ DexTools: Buy tax: ${dexToolsData.buyTax}%, Sell tax: ${dexToolsData.sellTax}%`);
+
+    // Process DexScreener
+    if (dexScreenerResult.status === 'fulfilled') {
+      try {
+        const response = dexScreenerResult.value;
+        if (response.data?.pairs && response.data.pairs.length > 0) {
+          const chainPairs = response.data.pairs.filter(p => p.chainId === chainName);
+          if (chainPairs.length > 0) {
+            const bestPair = chainPairs.sort((a, b) =>
+              (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
+            )[0];
+            console.log(`✅ DexScreener: price=$${bestPair.priceUsd}, liq=$${bestPair.liquidity?.usd}`);
+            const quoteTokenAddress = bestPair.quoteToken?.address?.toLowerCase();
+            const nativeAddress = nativeTokenAddresses[chainId]?.toLowerCase();
+            const isNativePair = quoteTokenAddress === nativeAddress;
+            const nativeTokenAmount = isNativePair && bestPair.liquidity?.quote
+              ? parseFloat(bestPair.liquidity.quote)
+              : null;
+            if (nativeTokenAmount) {
+              console.log(`✅ Native token in pair: ${nativeTokenAmount} ${bestPair.quoteToken?.symbol}`);
+            }
+            dexScreenerData = {
+              price: bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : null,
+              marketCap: bestPair.marketCap || null,
+              liquidity: bestPair.liquidity?.usd || null,
+              nativeTokenAmount,
+              pairName: `${bestPair.baseToken?.symbol || ''}/${bestPair.quoteToken?.symbol || ''}`,
+              pairAddress: bestPair.pairAddress || null,
+              pairCreatedAt: bestPair.pairCreatedAt || null,
+              priceChange5m: bestPair.priceChange?.m5 || null,
+              priceChange1h: bestPair.priceChange?.h1 || null,
+              priceChange6h: bestPair.priceChange?.h6 || null,
+              priceChange24h: bestPair.priceChange?.h24 || null,
+              volume24h: bestPair.volume?.h24 || null,
+              buyVolume24h: bestPair.volume?.h24Buy || null,
+              sellVolume24h: bestPair.volume?.h24Sell || null,
+              txns24h: bestPair.txns?.h24 || null,
+              makers24h: {
+                buyers: bestPair.txns?.h24?.buyers || null,
+                sellers: bestPair.txns?.h24?.sellers || null
+              },
+              source: 'DexScreener'
+            };
           }
         }
+        if (!dexScreenerData) console.log(`DexScreener: No pairs for ${chainName}`);
+      } catch (err) {
+        console.log(`DexScreener parse error: ${err.message}`);
       }
-      
-      if (!dexToolsData) {
-        console.log(`DexTools: No pairs for ${chainName}`);
-      }
-    } catch (err) {
-      console.log(`DexTools failed: ${err.message}`);
+    } else {
+      console.log(`DexScreener failed: ${dexScreenerResult.reason?.message}`);
     }
-    
-    // Try GoPlus for security data
-    try {
-      const secUrl = `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${tokenAddress}`;
-      const secResponse = await axios.get(secUrl, { timeout: 5000 });
-      const secResult = secResponse.data?.result?.[tokenAddress.toLowerCase()];
-      
-      if (secResult) {
-        goPlusData = {
-          isOpenSource: secResult.is_open_source === "1",
-          isHoneypot: secResult.is_honeypot === "1",
-          canTakeBackOwnership: secResult.can_take_back_ownership === "1",
-          ownerBalance: parseFloat(secResult.owner_percent || 0) * 100,
-          holderCount: parseInt(secResult.holder_count || 0),
-          topHolderPercent: parseFloat(secResult.holder_top10_percent || 0) * 100
-        };
-        console.log(`✅ GoPlus: holders=${goPlusData.holderCount}, top10=${goPlusData.topHolderPercent}%, verified=${goPlusData.isOpenSource}`);
+
+    // Process DexTools
+    if (dexToolsResult.status === 'fulfilled') {
+      try {
+        const response = dexToolsResult.value;
+        if (response.data?.results && response.data.results.length > 0) {
+          const chainPairs = response.data.results.filter(r => {
+            const pairChain = r.id.chain?.toLowerCase();
+            return pairChain === chainName ||
+                   (chainName === 'bsc' && pairChain === 'bnb') ||
+                   (chainName === 'polygon' && pairChain === 'matic');
+          });
+          if (chainPairs.length > 0) {
+            const bestPair = chainPairs[0];
+            console.log(`✅ DexTools: price=$${bestPair.price}`);
+            dexToolsData = {
+              price: bestPair.price || null,
+              marketCap: bestPair.metrics?.marketCap || null,
+              liquidity: bestPair.metrics?.liquidity || null,
+              totalTransactions: bestPair.metrics?.transactions || null,
+              buyTax: bestPair.metrics?.buyTax || null,
+              sellTax: bestPair.metrics?.sellTax || null,
+              pairName: bestPair.name || null,
+              source: 'DexTools'
+            };
+          }
+        }
+        if (!dexToolsData) console.log(`DexTools: No pairs for ${chainName}`);
+      } catch (err) {
+        console.log(`DexTools parse error: ${err.message}`);
       }
-    } catch (secErr) {
-      console.log(`GoPlus failed: ${secErr.message}`);
+    } else {
+      console.log(`DexTools failed: ${dexToolsResult.reason?.message}`);
+    }
+
+    // Process GoPlus
+    if (goPlusResult.status === 'fulfilled') {
+      try {
+        const secResult = goPlusResult.value.data?.result?.[tokenAddress.toLowerCase()];
+        if (secResult) {
+          goPlusData = {
+            isOpenSource: secResult.is_open_source === "1",
+            isHoneypot: secResult.is_honeypot === "1",
+            canTakeBackOwnership: secResult.can_take_back_ownership === "1",
+            ownerBalance: parseFloat(secResult.owner_percent || 0) * 100,
+            holderCount: parseInt(secResult.holder_count || 0),
+            topHolderPercent: parseFloat(secResult.holder_top10_percent || 0) * 100
+          };
+          console.log(`✅ GoPlus: holders=${goPlusData.holderCount}, top10=${goPlusData.topHolderPercent}%, verified=${goPlusData.isOpenSource}`);
+        }
+      } catch (err) {
+        console.log(`GoPlus parse error: ${err.message}`);
+      }
+    } else {
+      console.log(`GoPlus failed: ${goPlusResult.reason?.message}`);
     }
     
     // Merge data from all sources (prefer DexScreener for price/liquidity, DexTools for metrics)
@@ -1814,35 +1802,27 @@ module.exports = async (req, res) => {
     const duration = formatDuration(tokenData.unlockTime);
     const unlockDate = formatUnlockDate(tokenData.unlockTime);
     
-    const enriched = await enrichTokenData(tokenData.tokenAddress, chainId);
-    
+    // Run all slow external calls in parallel to stay within Vercel function timeout
+    const [enriched, tokenCreationTime, walletCreationTime, nativePrice] = await Promise.all([
+      enrichTokenData(tokenData.tokenAddress, chainId),
+      getTokenCreationTime(tokenData.tokenAddress, chainId).catch(err => {
+        console.error("Failed to get token creation time:", err.message);
+        return null;
+      }),
+      lockOwner
+        ? getWalletCreationTime(lockOwner, chainId).catch(err => {
+            console.error("Failed to get wallet creation time:", err.message);
+            return null;
+          })
+        : Promise.resolve(null),
+      getNativeTokenPrice(chainId).catch(err => {
+        console.error("Failed to get native token price:", err.message);
+        return null;
+      })
+    ]);
+
     console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}`);
-    
-    // Get token creation time for token age
-    let tokenCreationTime = null;
-    try {
-      tokenCreationTime = await getTokenCreationTime(tokenData.tokenAddress, chainId);
-    } catch (err) {
-      console.error("Failed to get token creation time:", err.message);
-    }
-    
-    // Get wallet creation time for wallet age
-    let walletCreationTime = null;
-    if (lockOwner) {
-      try {
-        walletCreationTime = await getWalletCreationTime(lockOwner, chainId);
-      } catch (err) {
-        console.error("Failed to get wallet creation time:", err.message);
-      }
-    }
-    
-    let nativePrice = null;
-    try {
-      nativePrice = await getNativeTokenPrice(chainId);
-      console.log(`Native token price: ${nativePrice}`);
-    } catch (err) {
-      console.error("Failed to get native token price:", err.message);
-    }
+    console.log(`Native token price: ${nativePrice}`);
     
     const nativeSymbols = { 1: 'ETH', 56: 'BNB', 137: 'MATIC', 8453: 'ETH' };
     const nativeSymbol = nativeSymbols[chainId] || 'ETH';
@@ -2458,49 +2438,49 @@ module.exports = async (req, res) => {
     
     const enrichedMessage = parts.join("\n");
     
-    // Save enrichment data for performance tracking
+    // Update lock record with enriched token data
     try {
       const { Pool } = require('pg');
-      const pool = new Pool({ 
+      const pool = new Pool({
         connectionString: process.env.POSTGRES_URL,
         ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
       });
-      
+
       await pool.query(`
-        UPDATE lock_alerts 
-        SET 
+        UPDATE lock_alerts
+        SET
           token_address = $1,
-          detection_price = $2,
-          detection_mcap = $3,
-          detection_liquidity = $4,
-          lock_score = $5,
-          locked_percent = $6,
-          native_locked_usd = $7,
-          token_symbol = $8,
-          enriched_at = $9
-        WHERE transaction_id = $10
+          token_symbol = $2,
+          token_price_at_lock = $3,
+          usd_value_at_lock = $4
+        WHERE transaction_id = $5
       `, [
         tokenData.tokenAddress || null,
-        enriched.price || null,
-        enriched.marketCap || null,
-        enriched.liquidity || null,
-        score || null,
-        lockedPercent ? parseFloat(lockedPercent) : null,
-        (enriched.nativeTokenAmount && nativePrice) ? (enriched.nativeTokenAmount * nativePrice) : null,
         tokenInfo.symbol || null,
-        Math.floor(Date.now() / 1000),
+        enriched.price || null,
+        usdValue ? parseFloat(usdValue) : null,
         req.body.txHash
       ]);
-      
+
       await pool.end();
-      console.log('✅ Saved enrichment data for performance tracking');
+      console.log('✅ Saved enrichment data to DB');
     } catch (dbErr) {
       console.error('⚠️ Failed to save enrichment data:', dbErr.message);
-      // Don't fail the whole request if this fails
     }
     
-    await editTelegramMessage(messageId, enrichedMessage);
-    
+    // Telegram enforces a 4096-char limit — truncate gracefully if exceeded
+    const TELEGRAM_MAX_LENGTH = 4000;
+    let finalMessage = enrichedMessage;
+    if (enrichedMessage.length > TELEGRAM_MAX_LENGTH) {
+      console.log(`⚠️ Message too long (${enrichedMessage.length} chars), truncating`);
+      const truncated = enrichedMessage.substring(0, TELEGRAM_MAX_LENGTH);
+      const lastNewline = truncated.lastIndexOf('\n');
+      finalMessage = truncated.substring(0, lastNewline > TELEGRAM_MAX_LENGTH * 0.8 ? lastNewline : TELEGRAM_MAX_LENGTH) +
+        `\n\n[View Transaction](${explorerLink})`;
+    }
+
+    await editTelegramMessage(messageId, finalMessage);
+
     console.log("✅ Enrichment complete and message updated");
     
     return res.status(200).json({ status: "success" });
