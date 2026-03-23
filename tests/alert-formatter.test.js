@@ -83,6 +83,29 @@ describe('formatAlert — opportunity tier', () => {
     const msg = formatAlert(opportunityCtx());
     expect(msg.length).toBeLessThanOrEqual(4000);
   });
+
+  test('shows no-account message when twitterHandle is null', () => {
+    const msg = formatAlert(opportunityCtx({ twitterHandle: null }));
+    expect(msg).toContain('No account found');
+  });
+
+  test('truncated message still ends with explorerLink', () => {
+    // Generate a context that will produce >4000 chars
+    const msg = formatAlert(opportunityCtx({
+      tier: 'opportunity',
+      twitterSentiment: 'Positive',
+      twitterHandle: '@' + 'a'.repeat(100),
+      tokenSymbol: 'T'.repeat(50),
+      devWallet: '0x' + 'a'.repeat(40),
+      devWalletAgeDays: 9999,
+      devWalletRugsInHuntrDb: 999
+    }));
+    // Whether truncated or not, the link must always be present exactly once
+    expect(msg).toContain('https://bscscan.com/tx/0x123');
+    const linkCount = (msg.match(/bscscan\.com\/tx\/0x123/g) || []).length;
+    expect(linkCount).toBe(1);
+    expect(msg.length).toBeLessThanOrEqual(4000);
+  });
 });
 
 describe('formatAlert — moderate tier', () => {
