@@ -60,6 +60,12 @@ describe('computeScore — Lock Quality sub-score', () => {
     // 10 + 8 + 0 = 18
     expect(lockScore).toBe(18);
   });
+
+  test('25–49% locked → 3 pts', () => {
+    const { lockScore } = computeScore(ctx({ lockedPercent: 35 }));
+    // 10 (duration) + 3 (25–49% locked) + 7 (≥$10K) = 20
+    expect(lockScore).toBe(20);
+  });
 });
 
 describe('computeScore — Market & Safety sub-score', () => {
@@ -146,6 +152,16 @@ describe('computeScore — hard disqualifiers', () => {
     // Sub-scores computed before disqualification, stored separately for transparency
     expect(result.lockScore).toBeGreaterThan(0);
     expect(result.disqualifierReason).toBeDefined();
+  });
+
+  test('isHoneypot disqualifier sets correct reason string', () => {
+    const { disqualifierReason } = computeScore(ctx({ isHoneypot: true }));
+    expect(disqualifierReason).toBe('Token confirmed as honeypot');
+  });
+
+  test('short lock disqualifier sets correct reason string', () => {
+    const { disqualifierReason } = computeScore(ctx({ lockDurationDays: 5 }));
+    expect(disqualifierReason).toBe('Lock duration under 7 days');
   });
 });
 
