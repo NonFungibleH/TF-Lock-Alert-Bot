@@ -42,7 +42,7 @@ Returns JSON:
     "opportunity": 0,
     "moderate": 0,
     "highRisk": 0,
-    "chains": []
+    "chains": ["BSC", "ETH", "MATIC", "BASE"]
   }
 }
 ```
@@ -78,6 +78,8 @@ Each lock object:
 Pagination: `?limit=100&offset=0` (default 100 rows, max 500).
 No auth required — public endpoint.
 
+`stats` counts and `chains` list are always computed from the **full unfiltered dataset**, regardless of any `?tier` or `?chain` query params. This allows the UI to show global totals in the stats bar while the grid shows filtered rows. `chains` is an array of distinct `chain_name` strings present in the full dataset, sorted alphabetically.
+
 ### Error Responses
 - `500 Internal Server Error` — returns `{ "error": "Internal server error", "message": "..." }` JSON (never HTML)
 - `400 Bad Request` — returns `{ "error": "Invalid parameter", "message": "..." }` for invalid tier/chain values
@@ -107,9 +109,10 @@ No auth required — public endpoint.
 - Multi-select not required — single active pill
 
 ### Filter Interaction
-- Tier tab and chain pill filters are applied client-side against the full dataset already fetched
-- Re-fetch from API when auto-refresh fires (applies current tier/chain filters to the new request)
-- Search input (AG Grid quickFilter) applies on top of tier/chain filters
+- Tier tab and chain pill filters are applied **client-side** against the full dataset already held in React state
+- The API is always fetched without tier/chain query params — the full dataset (up to the current limit/offset) is returned and filtering happens in the browser
+- On auto-refresh, the full dataset is re-fetched (no filter params sent); client-side tier/chain/search filters are re-applied to the new data automatically
+- Search input (AG Grid quickFilter) applies on top of the already-filtered tier/chain dataset
 
 ### AG Grid Columns
 | Column | Field | Width | Notes |
@@ -168,7 +171,7 @@ No auth required — public endpoint.
 - No Tailwind, no component library beyond AG Grid (CDN)
 - AG Grid Community Edition (free) — CDN loaded, version 31
 - Max response size: 500 rows per request
-- `api/dashboard/locks.js` must stay backward-compatible as JSON (existing callers)
+- `api/dashboard/locks.js` is being converted from HTML to JSON — this is a breaking change. The old HTML endpoint at `/api/dashboard/locks` will no longer render a UI; the new `/locks` page replaces it. Any bookmarks to `/api/dashboard/locks` will now receive JSON.
 - Do NOT modify Supabase or the lock_alerts schema
 - `pages/locks.js` uses React hooks — must be client-side rendered (no SSR for the grid)
 
