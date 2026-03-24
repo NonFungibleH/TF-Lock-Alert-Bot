@@ -4,7 +4,7 @@ const VALID_TIERS = ['opportunity', 'moderate', 'high-risk'];
 const VALID_CHAINS = ['eth', 'bsc', 'polygon', 'base', 'matic'];
 
 module.exports = async (req, res) => {
-  const { tier, chain, limit: limitParam, offset: offsetParam } = req.query;
+  const { tier, chain, limit: limitParam, offset: offsetParam, from, to } = req.query;
 
   // Validate params
   if (tier && !VALID_TIERS.includes(tier)) {
@@ -22,6 +22,34 @@ module.exports = async (req, res) => {
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
   });
 
+  // Ensure V2 columns exist (idempotent migrations)
+  try {
+    const migrationClient = await pool.connect();
+    const v2Cols = [
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS total_score INTEGER`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS tier VARCHAR(20)`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS lock_score INTEGER`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS social_score INTEGER`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS onchain_score INTEGER`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS market_score INTEGER`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS twitter_handle VARCHAR(255)`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS twitter_followers INTEGER`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS sentiment VARCHAR(20)`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS dev_wallet VARCHAR(255)`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS locked_percent DECIMAL`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS native_locked_usd DECIMAL`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS detection_price DECIMAL`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS detection_mcap DECIMAL`,
+      `ALTER TABLE lock_alerts ADD COLUMN IF NOT EXISTS detection_liquidity DECIMAL`,
+    ];
+    for (const sql of v2Cols) {
+      await migrationClient.query(sql);
+    }
+    migrationClient.release();
+  } catch (migErr) {
+    console.warn('Migration warning (non-fatal):', migErr.message);
+  }
+
   try {
     // Build filtered query
     const conditions = [];
@@ -34,6 +62,22 @@ module.exports = async (req, res) => {
     if (chain) {
       queryParams.push(chain.toLowerCase());
       conditions.push(`LOWER(chain_name) = $${queryParams.length}`);
+    }
+
+    if (from) {
+      const fromDate = new Date(from);
+      if (!isNaN(fromDate.getTime())) {
+        queryParams.push(fromDate.toISOString());
+        conditions.push(`created_at >= $${queryParams.length}::timestamptz`);
+      }
+    }
+
+    if (to) {
+      const toDate = new Date(to);
+      if (!isNaN(toDate.getTime())) {
+        queryParams.push(toDate.toISOString());
+        conditions.push(`created_at <= $${queryParams.length}::timestamptz`);
+      }
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
