@@ -1850,8 +1850,7 @@ module.exports = async (req, res) => {
     console.log(`Native token price: ${nativePrice}`);
     
     const nativeSymbols = { 1: 'ETH', 56: 'BNB', 137: 'MATIC', 8453: 'ETH' };
-    const nativeSymbol = nativeSymbols[chainId] || 'ETH';
-    
+
     let lockedPercent = null;
     let usdValue = null;
     let primaryTokenAmount = null;
