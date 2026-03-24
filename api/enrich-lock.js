@@ -1,6 +1,12 @@
 
 const axios = require("axios");
 const { ethers } = require("ethers");
+const { scoreSocial } = require('../lib/social-scorer');
+const { analyzeOnchain } = require('../lib/onchain-analyzer');
+const { computeScore } = require('../lib/scoring-engine');
+const { formatAlert } = require('../lib/alert-formatter');
+const { routeAlert } = require('../lib/alert-router');
+const LockAlertDatabase = require('../lib/database');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
@@ -1803,14 +1809,17 @@ module.exports = async (req, res) => {
     const unlockDate = formatUnlockDate(tokenData.unlockTime);
     
     // Run all slow external calls in parallel to stay within Vercel function timeout
-    const [enriched, tokenCreationTime, walletCreationTime, nativePrice] = await Promise.all([
+    // Use existing lockOwner variable (computed by extractLockOwner() earlier in the file)
+    const devWallet = lockOwner;
+
+    const [enrichedResult, tokenCreationTimeResult, walletCreationTimeResult, nativePriceResult, socialResult, onchainResult] = await Promise.allSettled([
       enrichTokenData(tokenData.tokenAddress, chainId),
       getTokenCreationTime(tokenData.tokenAddress, chainId).catch(err => {
         console.error("Failed to get token creation time:", err.message);
         return null;
       }),
-      lockOwner
-        ? getWalletCreationTime(lockOwner, chainId).catch(err => {
+      devWallet
+        ? getWalletCreationTime(devWallet, chainId).catch(err => {
             console.error("Failed to get wallet creation time:", err.message);
             return null;
           })
@@ -1818,8 +1827,24 @@ module.exports = async (req, res) => {
       getNativeTokenPrice(chainId).catch(err => {
         console.error("Failed to get native token price:", err.message);
         return null;
-      })
+      }),
+      scoreSocial(tokenInfo.symbol, tokenInfo.name || tokenInfo.symbol),
+      analyzeOnchain(devWallet, null, chainId)  // top3HolderPercent patched in after allSettled
     ]);
+
+    // Unwrap allSettled results
+    const enriched = enrichedResult.status === 'fulfilled' ? enrichedResult.value : {};
+    const tokenCreationTime = tokenCreationTimeResult.status === 'fulfilled' ? tokenCreationTimeResult.value : null;
+    const walletCreationTime = walletCreationTimeResult.status === 'fulfilled' ? walletCreationTimeResult.value : null;
+    const nativePrice = nativePriceResult.status === 'fulfilled' ? nativePriceResult.value : null;
+    const social = socialResult.status === 'fulfilled' ? socialResult.value : { socialScore: 0 };
+    const onchain = onchainResult.status === 'fulfilled' ? onchainResult.value : { onchainScore: 0, devWalletFlagged: false, devWalletAgeDays: null, devWalletRugsInHuntrDb: 0 };
+
+    // Patch top3 concentration signal into onchain score if data is available
+    if (onchain.onchainScore > 0 && enriched?.securityData?.topHolderPercent != null) {
+      const top3 = enriched.securityData.topHolderPercent;
+      if (top3 < 20) onchain.onchainScore = Math.min(25, onchain.onchainScore + 4);
+    }
 
     console.log(`Enrichment complete: price=${enriched.price}, liquidity=${enriched.liquidity}`);
     console.log(`Native token price: ${nativePrice}`);
@@ -1884,602 +1909,81 @@ module.exports = async (req, res) => {
     const tokenAgeMinutes = tokenCreationTime ? (Date.now() - tokenCreationTime * 1000) / (1000 * 60) : null;
     const poolAgeMinutes = enriched.pairCreatedAt ? (Date.now() - new Date(enriched.pairCreatedAt).getTime()) / (1000 * 60) : null;
     
-    // Prepare data for scoring
-    const scoringData = {
-      lockedPercent: lockedPercent,
-      unlockTime: tokenData.unlockTime,
-      nativeLocked: enriched.nativeTokenAmount || null,
-      nativePrice: nativePrice,
-      isVerified: enriched.securityData?.isOpenSource === true,
-      isRenounced: enriched.securityData?.canTakeBackOwnership === false,
-      isHoneypot: enriched.securityData?.isHoneypot === false,
-      topHolderPercent: enriched.securityData?.topHolderPercent,
-      holderCount: enriched.securityData?.holderCount,
-      tokenAgeMinutes: tokenAgeMinutes,
-      poolAgeMinutes: poolAgeMinutes,
-      buysSells: enriched.txns24h,
-      volume24h: enriched.volume24h,
-      liquidity: enriched.liquidity,
+    // === V2 PIPELINE: Build context → score → format → route ===
+
+    // Build shared context object
+    const ctx = {
+      // Identity
+      chain: req.body.chain || chain?.name,
+      chainId,
+      source,
+      explorerLink,
+      txHash: req.body.txHash,
+      messageId: req.body.messageId,
+      tokenAddress: tokenData.tokenAddress,
       tokenSymbol: tokenInfo.symbol,
-      isLPLock: tokenData.isLPLock,
-      makers24h: enriched.makers24h
+      tokenName: tokenInfo.name || tokenInfo.symbol,
+      devWallet,
+      nativeSymbol: nativeSymbols[chainId] || 'ETH',
+
+      // Token data (from enrichTokenData)
+      price: enriched.price || null,
+      priceChange1h: enriched.priceChange1h || null,
+      marketCap: enriched.marketCap || null,
+      liquidity: enriched.liquidity || null,
+      volume24h: enriched.volume24h || null,
+      buySellRatio: enriched.txns24h
+        ? (enriched.txns24h.buys || 0) / Math.max(enriched.txns24h.sells || 1, 1)
+        : null,
+      holderCount: enriched.securityData?.holderCount || null,
+      lockDurationDays: tokenData.unlockTime
+        ? Math.floor((tokenData.unlockTime - Math.floor(Date.now() / 1000)) / 86400)
+        : null,
+      lockedPercent: lockedPercent ? parseFloat(lockedPercent) : null,
+      nativeLockedUsd: nativePrice && enriched.nativeTokenAmount
+        ? enriched.nativeTokenAmount * nativePrice
+        : null,
+      isHoneypot: enriched.securityData?.isHoneypot === false ? false : true,
+      contractVerified: enriched.securityData?.isOpenSource === true,
+      ownershipRenounced: enriched.securityData?.canTakeBackOwnership === false,
+      ownerHoldPercent: enriched.securityData?.ownerPercent || 0,
+      top3HolderPercent: enriched.securityData?.topHolderPercent || null,
+
+      // Social (from social-scorer)
+      ...social,
+
+      // On-chain (from onchain-analyzer)
+      ...onchain,
     };
-    
-    const { score } = calculateOpportunityScore(scoringData);
-    const analysis = generateSmartAnalysis({ ...scoringData, score });
-    
-    // Check if this is a stablecoin
-    const stablecoins = ['USDC', 'USDT', 'DAI', 'BUSD', 'USDB', 'USDBC', 'FRAX', 'TUSD', 'LUSD'];
-    const isStablecoin = stablecoins.includes(tokenInfo.symbol.toUpperCase());
-    
-    if (isStablecoin) {
-      // Stablecoin - show simple message instead of score
-      parts.push(`🔒 **Liquidity Lock:** No price movement expected - this is a stablecoin!`);
-    } else {
-      // Regular token - show score and analysis
-      // Extract just the bottom line from analysis
-      const bottomLineMatch = analysis.match(/\*\*Bottom Line:\*\* (.+?)(?:\n|$)/);
-      const bottomLine = bottomLineMatch ? bottomLineMatch[1] : 'Analysis pending';
-      
-      // Display simplified analysis
-      let scoreRating = '';
-      if (score >= 80) {
-        scoreRating = 'Excellent';
-      } else if (score >= 70) {
-        scoreRating = 'Good';
-      } else if (score >= 60) {
-        scoreRating = 'Fair';
-      } else if (score >= 50) {
-        scoreRating = 'Moderate Risk';
-      } else {
-        scoreRating = 'High Risk';
-      }
-      
-      parts.push(`🧠 **Analysis:** ${score}/100 (${scoreRating}). ${bottomLine}`);
-    }
-    
-    parts.push("");
-    
-    // 1. Token info
-    parts.push("💎 **Token info**");
-    parts.push(`Token: $${tokenInfo.symbol}`);
-    
-    // Show token age if available
-    const tokenAge = tokenCreationTime ? formatContractAge(tokenCreationTime * 1000) : null;
-    if (tokenAge) {
-      parts.push(`Token Age: ${tokenAge}`);
-    }
-    
-    // Show pool age if available
-    const poolAge = formatContractAge(enriched.pairCreatedAt);
-    if (poolAge) {
-      parts.push(`Pool Age: ${poolAge}`);
-    }
-    
-    if (enriched.price) {
-      let priceStr;
-      if (enriched.price >= 1) {
-        priceStr = enriched.price.toFixed(enriched.price >= 100 ? 2 : 4);
-      } else if (enriched.price >= 0.0001) {
-        priceStr = enriched.price.toFixed(6).replace(/\.?0+$/, '');
-      } else {
-        priceStr = enriched.price.toFixed(8).replace(/\.?0+$/, '');
-      }
-      parts.push(`Price: $${priceStr}`);
-      
-      // Price changes - only show what makes sense based on pool age
-      const poolAgeMs = enriched.pairCreatedAt ? (Date.now() - new Date(enriched.pairCreatedAt).getTime()) : null;
-      const poolAgeMinutes = poolAgeMs ? poolAgeMs / (1000 * 60) : null;
-      
-      if (enriched.priceChange5m !== null || enriched.priceChange1h !== null || enriched.priceChange6h !== null) {
-        const changes = [];
-        
-        // Always show 5m if available
-        if (enriched.priceChange5m !== null) {
-          const sign = enriched.priceChange5m >= 0 ? '+' : '';
-          changes.push(`5m: ${sign}${enriched.priceChange5m.toFixed(1)}%`);
-        }
-        
-        // Only show 1h if pool is older than 1 hour
-        if (enriched.priceChange1h !== null && poolAgeMinutes && poolAgeMinutes >= 60) {
-          const sign = enriched.priceChange1h >= 0 ? '+' : '';
-          changes.push(`1h: ${sign}${enriched.priceChange1h.toFixed(1)}%`);
-        }
-        
-        // Only show 6h if pool is older than 6 hours
-        if (enriched.priceChange6h !== null && poolAgeMinutes && poolAgeMinutes >= 360) {
-          const sign = enriched.priceChange6h >= 0 ? '+' : '';
-          changes.push(`6h: ${sign}${enriched.priceChange6h.toFixed(1)}%`);
-        }
-        
-        // Only show 24h if pool is older than 24 hours
-        if (enriched.priceChange24h !== null && poolAgeMinutes && poolAgeMinutes >= 1440) {
-          const sign = enriched.priceChange24h >= 0 ? '+' : '';
-          changes.push(`24h: ${sign}${enriched.priceChange24h.toFixed(1)}%`);
-        }
-        
-        if (changes.length > 0) {
-          parts.push(changes.join(' | '));
-        }
-      }
-    }
-    
-    if (enriched.marketCap) {
-      const mcStr = enriched.marketCap >= 1000000 
-        ? `$${(enriched.marketCap / 1000000).toFixed(1)}M`
-        : enriched.marketCap >= 1000
-        ? `$${(enriched.marketCap / 1000).toFixed(1)}K`
-        : `$${enriched.marketCap.toFixed(0)}`;
-      parts.push(`MC: ${mcStr}`);
-    }
-    
-    if (enriched.pairName) {
-      parts.push(`Pair: ${enriched.pairName}`);
-    } else if (tokenData.isLPLock && pairedTokenInfo) {
-      parts.push(`Pair: ${tokenInfo.symbol}/${pairedTokenInfo.symbol}`);
-    }
-    
-    // Show pool liquidity in Token info for LP locks
-    if (tokenData.isLPLock && enriched.liquidity) {
-      const liqStr = enriched.liquidity >= 1000000
-        ? `$${(enriched.liquidity / 1000000).toFixed(1)}M`
-        : enriched.liquidity >= 1000
-        ? `$${(enriched.liquidity / 1000).toFixed(1)}K`
-        : `$${enriched.liquidity.toFixed(0)}`;
-      parts.push(`Pool Liquidity: ${liqStr}`);
-    }
-    
-    // Show native token amount in pool for LP locks
-    if (tokenData.isLPLock && enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0) {
-      const nativeStr = enriched.nativeTokenAmount >= 1 
-        ? enriched.nativeTokenAmount.toFixed(2)
-        : enriched.nativeTokenAmount.toFixed(4);
-      
-      if (nativePrice) {
-        const nativeUsdValue = (enriched.nativeTokenAmount * nativePrice).toFixed(2);
-        parts.push(`Native in Pool: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
-      } else {
-        parts.push(`Native in Pool: ${nativeStr} ${nativeSymbol}`);
-      }
-    }
-    
-    // 2. Lock details
-    parts.push("");
-    parts.push("🔐 **Lock details**");
-    
-    // Show LP amounts if available
-    if (primaryTokenAmount && pairedTokenInfo) {
-      let primaryAmountStr;
-      if (primaryTokenAmount >= 1000000) {
-        primaryAmountStr = `${(primaryTokenAmount / 1000000).toFixed(2)}M`;
-      } else if (primaryTokenAmount >= 1000) {
-        primaryAmountStr = `${(primaryTokenAmount / 1000).toFixed(2)}K`;
-      } else if (primaryTokenAmount >= 1) {
-        primaryAmountStr = primaryTokenAmount.toFixed(2);
-      } else {
-        primaryAmountStr = primaryTokenAmount.toFixed(4);
-      }
-      
-      let pairedAmountStr;
-      if (pairedTokenAmount >= 1000000) {
-        pairedAmountStr = `${(pairedTokenAmount / 1000000).toFixed(2)}M`;
-      } else if (pairedTokenAmount >= 1000) {
-        pairedAmountStr = `${(pairedTokenAmount / 1000).toFixed(2)}K`;
-      } else if (pairedTokenAmount >= 1) {
-        pairedAmountStr = pairedTokenAmount.toFixed(2);
-      } else {
-        pairedAmountStr = pairedTokenAmount.toFixed(4);
-      }
-      
-      if (usdValue) {
-        parts.push(`Amount: ${primaryAmountStr} ${tokenInfo.symbol} + ${pairedAmountStr} ${pairedTokenInfo.symbol} ($${Number(usdValue).toLocaleString()})`);
-      } else {
-        parts.push(`Amount: ${primaryAmountStr} ${tokenInfo.symbol} + ${pairedAmountStr} ${pairedTokenInfo.symbol}`);
-      }
-    } else if (amount) {
-      let amountStr;
-      if (amount >= 1000000) {
-        amountStr = `${(amount / 1000000).toFixed(1)}M`;
-      } else if (amount >= 1000) {
-        amountStr = `${(amount / 1000).toFixed(1)}K`;
-      } else if (amount >= 1) {
-        amountStr = amount.toFixed(0);
-      } else if (amount >= 0.01) {
-        amountStr = amount.toFixed(2);
-      } else {
-        amountStr = amount.toFixed(4);
-      }
-      
-      if (usdValue) {
-        parts.push(`Amount: ${amountStr} tokens ($${Number(usdValue).toLocaleString()})`);
-      } else {
-        parts.push(`Amount: ${amountStr} tokens`);
-      }
-    }
-    
-    if (lockedPercent) {
-      parts.push(`Locked: ${lockedPercent}% of supply`);
-    }
-    
-    // Add LP lock as % of total liquidity
-    let rawLiqPercent = null; // Declare outside so we can use it for native locked calculation
-    if (tokenData.isLPLock && enriched.liquidity) {
-      // If we have calculated USD value of locked position
-      if (usdValue && parseFloat(usdValue) > 0) {
-        rawLiqPercent = (parseFloat(usdValue) / enriched.liquidity) * 100;
-      }
-      // If we have native token locked, calculate based on that
-      else if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0 && nativePrice) {
-        const lockedNativeUSD = enriched.nativeTokenAmount * nativePrice;
-        const totalLiquidityNative = enriched.liquidity / 2; // Half of pool liquidity is native token
-        if (totalLiquidityNative > 0) {
-          rawLiqPercent = (lockedNativeUSD / totalLiquidityNative) * 100;
-        }
-      }
-      
-      if (rawLiqPercent !== null) {
-        // Cap at 100% (can't lock more than 100% of the pool)
-        rawLiqPercent = Math.min(rawLiqPercent, 100);
-        const lockedLiqPercent = formatPercentage(rawLiqPercent);
-        parts.push(`Locked Liquidity: ${lockedLiqPercent}% of pool`);
-      }
-    }
-    
-    // Show native token locked for LP locks (important metric that can't be manipulated)
-    if (tokenData.isLPLock) {
-      let actualNativeLocked = null;
-      
-      // Calculate actual native locked based on locked liquidity %
-      if (enriched.nativeTokenAmount && enriched.nativeTokenAmount > 0 && rawLiqPercent) {
-        actualNativeLocked = enriched.nativeTokenAmount * (rawLiqPercent / 100);
-      }
-      // Or use calculated paired token amounts for V3
-      else if (pairedTokenAmount && pairedTokenInfo) {
-        const wrappedNativeTokens = {
-          1: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',    // WETH
-          56: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',   // WBNB
-          137: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270',  // WMATIC/WPOL
-          8453: '0x4200000000000000000000000000000000000006'  // WETH on Base
-        };
-        
-        const pairedTokenLower = tokenData.token1?.toLowerCase();
-        const nativeTokenAddress = wrappedNativeTokens[chainId]?.toLowerCase();
-        
-        if (pairedTokenLower === nativeTokenAddress) {
-          actualNativeLocked = pairedTokenAmount;
-        }
-      }
-      
-      // Display native locked if we have it
-      if (actualNativeLocked && actualNativeLocked > 0) {
-        const nativeStr = actualNativeLocked >= 1 
-          ? actualNativeLocked.toFixed(2)
-          : actualNativeLocked.toFixed(4);
-        
-        if (nativePrice) {
-          const nativeUsdValue = (actualNativeLocked * nativePrice).toFixed(2);
-          parts.push(`Native Locked: ${nativeStr} ${nativeSymbol} ($${Number(nativeUsdValue).toLocaleString()})`);
-        } else {
-          parts.push(`Native Locked: ${nativeStr} ${nativeSymbol}`);
-        }
-      }
-    }
-    
-    parts.push(`Duration: ${duration}`);
-    parts.push(`Platform: ${source}`);
-    parts.push(`Chain: ${chain}`);
-    
-    // 3. Security section with emojis for owner holds
-    parts.push("");
-    parts.push("⚡ **Security**");
-    
-    if (enriched.buyTax !== null || enriched.sellTax !== null) {
-      const buyTaxStr = enriched.buyTax !== null ? `${enriched.buyTax}%` : 'N/A';
-      const sellTaxStr = enriched.sellTax !== null ? `${enriched.sellTax}%` : 'N/A';
-      parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
-    }
-    
-    if (enriched.securityData?.ownerBalance !== undefined && enriched.securityData?.ownerBalance !== null) {
-      const ownerPercent = enriched.securityData.ownerBalance;
-      let ownerEmoji = '';
-      
-      // Add emoji based on owner holdings percentage
-      if (ownerPercent === 0) {
-        ownerEmoji = '✅';
-      } else if (ownerPercent < 5) {
-        ownerEmoji = '✅';
-      } else if (ownerPercent < 10) {
-        ownerEmoji = '⚠️';
-      } else {
-        ownerEmoji = '🔴';
-      }
-      
-      parts.push(`${ownerEmoji} Owner holds: ${ownerPercent.toFixed(1)}%`);
-    }
-    
-    // Add verification and honeypot checks
-    if (enriched.securityData && Object.keys(enriched.securityData).length > 0) {
-      if (enriched.securityData.isOpenSource === true) {
-        parts.push("✅ Verified contract");
-      } else if (enriched.securityData.isOpenSource === false) {
-        parts.push("⚠️ Not verified");
-      }
-      
-      if (enriched.securityData.isHoneypot === false) {
-        parts.push("✅ Not honeypot");
-      } else if (enriched.securityData.isHoneypot === true) {
-        parts.push("🔴 Honeypot detected!");
-      }
-      
-      // Contract renounced status
-      if (enriched.securityData.canTakeBackOwnership === false) {
-        parts.push("✅ Ownership renounced");
-      } else if (enriched.securityData.canTakeBackOwnership === true) {
-        parts.push("⚠️ Owner can take back control");
-      }
-    }
-    
-    // 4. Dev Wallet section
-    if (lockOwner) {
-      parts.push("");
-      parts.push("👤 **Dev wallet**");
-      
-      // Add explorer link for wallet
-      const explorerUrls = {
-        1: 'https://etherscan.io/address/',
-        56: 'https://bscscan.com/address/',
-        137: 'https://polygonscan.com/address/',
-        8453: 'https://basescan.org/address/'
-      };
-      const explorerUrl = explorerUrls[chainId];
-      
-      if (explorerUrl) {
-        parts.push(`[${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}](${explorerUrl}${lockOwner})`);
-      } else {
-        parts.push(`\`${lockOwner.slice(0, 6)}...${lockOwner.slice(-4)}\``);
-      }
-      
-      // Show wallet age
-      const walletAge = walletCreationTime ? formatContractAge(walletCreationTime * 1000) : null;
-      if (walletAge) {
-        parts.push(`Wallet Age: ${walletAge}`);
-      }
-      
-      // Show lock fee
-      if (lockFeeInfo) {
-        if (lockFeeInfo.paid) {
-          const feeAmount = lockFeeInfo.amount.toFixed(4);
-          let feeUSD = '';
-          if (nativePrice) {
-            const usdValue = (lockFeeInfo.amount * nativePrice).toFixed(2);
-            feeUSD = ` ($${usdValue})`;
-          }
-          parts.push(`💰 Lock Fee: ${feeAmount} ${nativeSymbol}${feeUSD}`);
-        } else if (lockFeeInfo.whitelisted) {
-          parts.push(`💰 Lock Fee: Whitelisted`);
-        }
-      }
-      
-      // Note: Lock history requires querying lock platform APIs
-      // For now, show placeholder that we can enhance later
-      parts.push(`History: Not yet tracked`);
-      
-      // Token holdings would require indexer API (future enhancement)
-      // parts.push(`Holds: X different tokens`);
-    }
-    
-    // 5. Trading Stats section
-    parts.push("");
-    parts.push("📊 **Trading stats**");
-    
-    // Only show liquidity here for non-LP locks (for LP locks it's already in Token info)
-    if (!tokenData.isLPLock && enriched.liquidity) {
-      const liqStr = enriched.liquidity >= 1000000
-        ? `$${(enriched.liquidity / 1000000).toFixed(1)}M`
-        : enriched.liquidity >= 1000
-        ? `$${(enriched.liquidity / 1000).toFixed(1)}K`
-        : `$${enriched.liquidity.toFixed(0)}`;
-      parts.push(`Liquidity: ${liqStr}`);
-    }
-    
-    // Volume 24h
-    if (enriched.volume24h) {
-      const volStr = enriched.volume24h >= 1000000
-        ? `$${(enriched.volume24h / 1000000).toFixed(1)}M`
-        : enriched.volume24h >= 1000
-        ? `$${(enriched.volume24h / 1000).toFixed(1)}K`
-        : `$${enriched.volume24h.toFixed(0)}`;
-      parts.push(`Volume 24h: ${volStr}`);
-    }
-    
-    // Buy Volume 24h
-    if (enriched.buyVolume24h) {
-      const buyVolStr = enriched.buyVolume24h >= 1000000
-        ? `$${(enriched.buyVolume24h / 1000000).toFixed(1)}M`
-        : enriched.buyVolume24h >= 1000
-        ? `$${(enriched.buyVolume24h / 1000).toFixed(1)}K`
-        : `$${enriched.buyVolume24h.toFixed(0)}`;
-      parts.push(`Buy Vol: ${buyVolStr}`);
-    }
-    
-    // Sell Volume 24h
-    if (enriched.sellVolume24h) {
-      const sellVolStr = enriched.sellVolume24h >= 1000000
-        ? `$${(enriched.sellVolume24h / 1000000).toFixed(1)}M`
-        : enriched.sellVolume24h >= 1000
-        ? `$${(enriched.sellVolume24h / 1000).toFixed(1)}K`
-        : `$${enriched.sellVolume24h.toFixed(0)}`;
-      parts.push(`Sell Vol: ${sellVolStr}`);
-    }
-    
-    // Buys/Sells ratio
-    if (enriched.txns24h) {
-      const buys = enriched.txns24h.buys || 0;
-      const sells = enriched.txns24h.sells || 0;
-      if (buys > 0 || sells > 0) {
-        let ratioText = '';
-        if (sells > 0) {
-          const ratio = buys / sells;
-          if (ratio > 1) {
-            ratioText = ` (${ratio.toFixed(1)}x more buys)`;
-          } else if (ratio < 1) {
-            const inverseRatio = sells / buys;
-            ratioText = ` (${inverseRatio.toFixed(1)}x more sells)`;
-          } else {
-            ratioText = ' (equal)';
-          }
-        } else if (buys > 0) {
-          ratioText = ' (only buys)';
-        }
-        parts.push(`Buys/Sells: ${buys.toLocaleString()}/${sells.toLocaleString()}${ratioText}`);
-      }
-    }
-    
-    // Makers (unique buyers/sellers)
-    if (enriched.makers24h) {
-      const buyers = enriched.makers24h.buyers || 0;
-      const sellers = enriched.makers24h.sellers || 0;
-      
-      if (buyers > 0 || sellers > 0) {
-        parts.push(`Makers: ${buyers.toLocaleString()} buyers / ${sellers.toLocaleString()} sellers`);
-      }
-    }
-    
-    if (enriched.totalTransactions) {
-      const txStr = enriched.totalTransactions >= 1000000
-        ? `${(enriched.totalTransactions / 1000000).toFixed(1)}M`
-        : enriched.totalTransactions >= 1000
-        ? `${(enriched.totalTransactions / 1000).toFixed(1)}K`
-        : enriched.totalTransactions.toLocaleString();
-      parts.push(`Total TXs: ${txStr}`);
-    }
-    
-    // Holder count
-    if (enriched.securityData?.holderCount) {
-      parts.push(`Holders: ${enriched.securityData.holderCount.toLocaleString()}`);
-    }
-    
-    // Top 10 holders percentage of supply - only show if > 0
-    if (enriched.securityData?.topHolderPercent !== null && 
-        enriched.securityData?.topHolderPercent !== undefined && 
-        enriched.securityData.topHolderPercent > 0) {
-      parts.push(`Top 10 Hold: ${enriched.securityData.topHolderPercent.toFixed(1)}% of supply`);
-    }
-    
-    // Buy/Sell Tax
-    if (enriched.buyTax !== null || enriched.sellTax !== null) {
-      const buyTaxStr = enriched.buyTax !== null ? `${enriched.buyTax}%` : 'N/A';
-      const sellTaxStr = enriched.sellTax !== null ? `${enriched.sellTax}%` : 'N/A';
-      parts.push(`Tax: ${buyTaxStr} buy / ${sellTaxStr} sell`);
-    }
-    
-    // Pattern warnings (if any)
-    const patternWarnings = detectUnusualPatterns(
-      lockedPercent ? parseFloat(lockedPercent) : null,
-      tokenData.unlockTime,
-      usdValue,
-      tokenData.isLPLock
-    );
-    
-    if (patternWarnings.length > 0) {
-      parts.push("");
-      parts.push("⚠️ **Warnings**");
-      patternWarnings.forEach(warning => parts.push(warning));
-    }
-    
-    // 6. Links
-    parts.push("");
-    parts.push("🔗 **Links**");
-    
-    const chainMap = { 1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base" };
-    const chainName = chainMap[chainId] || "ethereum";
-    
-    // All links on one line separated by |
-    const links = [
-      `[DexScreener](https://dexscreener.com/${chainName}/${tokenData.tokenAddress})`,
-      `[DexTools](https://www.dextools.io/app/en/${chainName}/pair-explorer/${tokenData.tokenAddress})`,
-      `[TokenSniffer](https://tokensniffer.com/token/${chainName}/${tokenData.tokenAddress})`
-    ];
-    parts.push(links.join(' | '));
-    
-    // Search on X - no line break
-    const twitterSearchUrl = `https://twitter.com/search?q=${tokenData.tokenAddress}&src=typed_query&f=live`;
-    parts.push(`[🔍 Search on X](${twitterSearchUrl})`);
-    
-    // 7. Snipe section with bot links and DEX
-    parts.push("");
-    parts.push("⚡ **Snipe**");
-    
-    // Generate bot links
-    const unibotLink = `https://t.me/unibotsniper_bot?start=${tokenData.tokenAddress}`;
-    const bananaLink = `https://t.me/BananaGunSniper_bot?start=snipe-${tokenData.tokenAddress}`;
-    const maestroLink = `https://t.me/MaestroSniperBot?start=${tokenData.tokenAddress}`;
-    
-    // Bot links on one line
-    const botLinks = [
-      `[Unibot](${unibotLink})`,
-      `[Banana Gun](${bananaLink})`,
-      `[Maestro](${maestroLink})`
-    ];
-    parts.push(botLinks.join(' | '));
-    
-    // DEX buy link
-    const buyLink = getBuyLink(tokenData.tokenAddress, chainId);
-    const dexInfo = getDexInfo(chainId);
-    if (buyLink && dexInfo) {
-      parts.push(`[🛒 Buy on ${dexInfo.name}](${buyLink})`);
-    } else if (buyLink) {
-      parts.push(`[🛒 Buy Now](${buyLink})`);
-    }
-    
-    // 8. View transaction
-    parts.push("");
-    parts.push(`[View Transaction](${explorerLink})`);
-    
-    const enrichedMessage = parts.join("\n");
-    
-    // Update lock record with enriched token data
-    try {
-      const { Pool } = require('pg');
-      const pool = new Pool({
-        connectionString: process.env.POSTGRES_URL,
-        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-      });
 
-      await pool.query(`
-        UPDATE lock_alerts
-        SET
-          token_address = $1,
-          token_symbol = $2,
-          token_price_at_lock = $3,
-          usd_value_at_lock = $4
-        WHERE transaction_id = $5
-      `, [
-        tokenData.tokenAddress || null,
-        tokenInfo.symbol || null,
-        enriched.price || null,
-        usdValue ? parseFloat(usdValue) : null,
-        req.body.txHash
-      ]);
+    // Score
+    const scores = computeScore(ctx);
+    Object.assign(ctx, scores);
 
-      await pool.end();
-      console.log('✅ Saved enrichment data to DB');
-    } catch (dbErr) {
-      console.error('⚠️ Failed to save enrichment data:', dbErr.message);
-    }
-    
-    // Telegram enforces a 4096-char limit — truncate gracefully if exceeded
-    const TELEGRAM_MAX_LENGTH = 4000;
-    let finalMessage = enrichedMessage;
-    if (enrichedMessage.length > TELEGRAM_MAX_LENGTH) {
-      console.log(`⚠️ Message too long (${enrichedMessage.length} chars), truncating`);
-      const truncated = enrichedMessage.substring(0, TELEGRAM_MAX_LENGTH);
-      const lastNewline = truncated.lastIndexOf('\n');
-      finalMessage = truncated.substring(0, lastNewline > TELEGRAM_MAX_LENGTH * 0.8 ? lastNewline : TELEGRAM_MAX_LENGTH) +
-        `\n\n[View Transaction](${explorerLink})`;
-    }
+    // Format message
+    const message = formatAlert(ctx);
 
-    await editTelegramMessage(messageId, finalMessage);
+    // Route to Telegram
+    await routeAlert(ctx, message);
+
+    // Save enriched record to DB
+    const db = new LockAlertDatabase();
+    await db.upsertScores(req.body.txHash, {
+      lockScore: ctx.lockScore,
+      socialScore: ctx.socialScore,
+      onchainScore: ctx.onchainScore,
+      marketScore: ctx.marketScore,
+      totalScore: ctx.totalScore,
+      tier: ctx.tier,
+      twitterHandle: ctx.twitterHandle,
+      twitterFollowers: ctx.twitterFollowers,
+      sentiment: ctx.twitterSentiment,
+      devWallet: ctx.devWallet,
+      tokenPriceAtLock: ctx.price,
+      usdValueAtLock: ctx.nativeLockedUsd,
+      tokenAddress: ctx.tokenAddress,
+      tokenSymbol: ctx.tokenSymbol
+    });
 
     console.log("✅ Enrichment complete and message updated");
     
