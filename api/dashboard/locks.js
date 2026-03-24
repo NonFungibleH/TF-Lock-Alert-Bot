@@ -44,7 +44,6 @@ module.exports = async (req, res) => {
       SELECT
         transaction_id,
         chain_name,
-        source,
         token_symbol,
         token_address,
         detection_price,
@@ -118,7 +117,6 @@ module.exports = async (req, res) => {
       sentiment: row.sentiment,
       devWallet: row.dev_wallet,
       explorerLink: row.explorer_link,
-      source: row.source
     }));
 
     res.json({ locks, stats });
