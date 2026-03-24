@@ -5,7 +5,7 @@ const LockAlertDatabase = require('../lib/database');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_GROUP_CHAT_ID = process.env.TELEGRAM_GROUP_CHAT_ID;
-const TELEGRAM_TOPIC_DISCUSSION = process.env.TELEGRAM_TOPIC_DISCUSSION;
+const TELEGRAM_TOPIC_ALL_LOCKS = process.env.TELEGRAM_TOPIC_ALL_LOCKS || process.env.TELEGRAM_TOPIC_DISCUSSION;
 
 // RPC endpoints - Use env vars first, then fallback to premium public RPCs
 const RPC_URLS = {
@@ -55,7 +55,7 @@ async function sendTelegramMessage(text) {
     `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
     {
       chat_id: TELEGRAM_GROUP_CHAT_ID,
-      message_thread_id: TELEGRAM_TOPIC_DISCUSSION,
+      message_thread_id: TELEGRAM_TOPIC_ALL_LOCKS,
       text,
       parse_mode: "Markdown",
       disable_web_page_preview: true
