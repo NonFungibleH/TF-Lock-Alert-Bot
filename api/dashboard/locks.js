@@ -65,18 +65,18 @@ module.exports = async (req, res) => {
     }
 
     if (from) {
-      const fromDate = new Date(from);
-      if (!isNaN(fromDate.getTime())) {
-        queryParams.push(fromDate.toISOString());
-        conditions.push(`created_at >= $${queryParams.length}::timestamptz`);
+      const fromEpoch = Math.floor(new Date(from).getTime() / 1000);
+      if (!isNaN(fromEpoch)) {
+        queryParams.push(fromEpoch);
+        conditions.push(`created_at >= $${queryParams.length}`);
       }
     }
 
     if (to) {
-      const toDate = new Date(to);
-      if (!isNaN(toDate.getTime())) {
-        queryParams.push(toDate.toISOString());
-        conditions.push(`created_at <= $${queryParams.length}::timestamptz`);
+      const toEpoch = Math.floor(new Date(to).getTime() / 1000);
+      if (!isNaN(toEpoch)) {
+        queryParams.push(toEpoch);
+        conditions.push(`created_at <= $${queryParams.length}`);
       }
     }
 

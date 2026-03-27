@@ -4,9 +4,14 @@ import Script from 'next/script'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function relativeTime(iso) {
-  if (!iso) return '—'
-  const d = Date.now() - new Date(iso).getTime()
+function relativeTime(val) {
+  if (!val) return '—'
+  // created_at is stored as BIGINT (Unix epoch seconds)
+  const ts = typeof val === 'number' || /^\d+$/.test(String(val))
+    ? parseInt(val) * 1000
+    : new Date(val).getTime()
+  if (isNaN(ts)) return '—'
+  const d = Date.now() - ts
   const m = Math.floor(d / 60000)
   if (m < 1) return 'just now'
   if (m < 60) return `${m}m ago`
@@ -56,7 +61,11 @@ const COLS = [
   {
     headerName: 'Time', field: 'time', width: 110, sort: 'desc',
     cellRenderer: p => relativeTime(p.value),
-    tooltipValueGetter: p => p.value ? new Date(p.value).toLocaleString() : '',
+    tooltipValueGetter: p => {
+      if (!p.value) return ''
+      const ts = /^\d+$/.test(String(p.value)) ? parseInt(p.value) * 1000 : new Date(p.value).getTime()
+      return isNaN(ts) ? '' : new Date(ts).toLocaleString()
+    },
   },
   {
     headerName: 'Score', field: 'score', width: 85,
@@ -414,15 +423,6 @@ export default function LocksPage() {
               onChange={handleSearch}
             />
 
-            {/* Refresh */}
-            <div className="refresh-controls">
-              <button
-                className={`refresh-toggle ${autoRefresh ? 'active' : 'off'}`}
-                onClick={() => setAutoRefresh(r => !r)}
-              >
-                {autoRefresh ? '⟳ AUTO' : '⟳ OFF'}
-              </button>
-            </div>
           </div>
 
           {/* Error */}
