@@ -78,7 +78,13 @@ const COLS = [
     filter: true,
   },
   { headerName: 'Token', field: 'token', width: 95, filter: true },
-  { headerName: 'Chain', field: 'chain', width: 80, filter: true },
+  {
+    headerName: 'Chain', field: 'chain', width: 85, filter: true,
+    cellRenderer: p => {
+      const map = { 'Ethereum': 'ETH', 'BNB Chain': 'BSC', 'Polygon': 'MATIC', 'Base': 'BASE' }
+      return map[p.value] || p.value || '—'
+    },
+  },
   {
     headerName: 'Locked %', field: 'lockedPercent', width: 100,
     valueFormatter: p => p.value != null ? p.value.toFixed(1) + '%' : '—',

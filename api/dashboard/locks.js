@@ -3,6 +3,15 @@ const { Pool } = require('pg');
 const VALID_TIERS = ['opportunity', 'moderate', 'high-risk'];
 const VALID_CHAINS = ['eth', 'bsc', 'polygon', 'base', 'matic'];
 
+// Maps UI pill values → DB chain_name values (case-insensitive prefix match)
+const CHAIN_NAME_MAP = {
+  eth:     'Ethereum',
+  bsc:     'BNB Chain',
+  polygon: 'Polygon',
+  matic:   'Polygon',
+  base:    'Base',
+};
+
 module.exports = async (req, res) => {
   const { tier, chain, limit: limitParam, offset: offsetParam, from, to } = req.query;
 
@@ -60,8 +69,9 @@ module.exports = async (req, res) => {
       conditions.push(`tier = $${queryParams.length}`);
     }
     if (chain) {
-      queryParams.push(chain.toLowerCase());
-      conditions.push(`LOWER(chain_name) = $${queryParams.length}`);
+      const dbChainName = CHAIN_NAME_MAP[chain.toLowerCase()] || chain;
+      queryParams.push(dbChainName);
+      conditions.push(`chain_name = $${queryParams.length}`);
     }
 
     if (from) {
