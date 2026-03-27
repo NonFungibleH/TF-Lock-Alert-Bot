@@ -1981,7 +1981,10 @@ module.exports = async (req, res) => {
       tokenPriceAtLock: ctx.price,
       usdValueAtLock: ctx.nativeLockedUsd,
       tokenAddress: ctx.tokenAddress,
-      tokenSymbol: ctx.tokenSymbol
+      tokenSymbol: ctx.tokenSymbol,
+      lockedPercent: ctx.lockedPercent,
+      marketCap: ctx.marketCap,
+      liquidity: ctx.liquidity
     });
 
     console.log("✅ Enrichment complete and message updated");
